@@ -1,0 +1,564 @@
+const OSM_STYLE   = 'https://tiles.openfreemap.org/styles/liberty';
+const TERRAIN_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const CESIUM_BASE = '/node_modules/cesium/Build/Cesium/';
+
+const D2R = Math.PI / 180;
+const R2D = 180 / Math.PI;
+
+let nav = { lat: 24.7136, lng: 46.6753, zoom: 15 };
+let map2d, map3d, cesiumViewer;
+let rotateRemover = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const s = Object.assign(document.createElement('script'), { src });
+    s.onload = res; s.onerror = rej;
+    document.head.appendChild(s);
+  });
+}
+function loadLink(href) {
+  document.head.appendChild(
+    Object.assign(document.createElement('link'), { rel: 'stylesheet', href })
+  );
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === name)
+  );
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+
+  if (name === '2d')    { if (!map2d)        initLeaflet();    else map2d.invalidateSize(); }
+  if (name === '3d')    { if (!map3d)        initMapLibre3D(); else map3d.resize(); }
+  if (name === 'globe') { initCesium(); }
+  if (name !== 'globe') stopRotation();
+}
+
+// ── 2D Leaflet ────────────────────────────────────────────────────────────────
+function initLeaflet() {
+  map2d = L.map('map2d', { center: [nav.lat, nav.lng], zoom: nav.zoom });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map2d);
+}
+
+// ── 3D City — MapLibre GL ─────────────────────────────────────────────────────
+function initMapLibre3D() {
+  map3d = new maplibregl.Map({
+    container: 'map3d', style: OSM_STYLE,
+    center: [nav.lng, nav.lat], zoom: nav.zoom,
+    pitch: 65, bearing: -20, antialias: true,
+  });
+  map3d.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map3d.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
+
+  map3d.on('load', () => {
+    map3d.addSource('terrain', { type: 'raster-dem', tiles: [TERRAIN_URL], tileSize: 256, encoding: 'terrarium' });
+    map3d.setTerrain({ source: 'terrain', exaggeration: 1.5 });
+    map3d.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } });
+    map3d.addLayer({
+      id: 'osm-3d-buildings', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building', minzoom: 13,
+      paint: {
+        'fill-extrusion-color': ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 4],
+          0,'#1c2050', 10,'#283080', 30,'#4a5aaa', 80,'#7080ff', 200,'#a090ff', 400,'#d4b0ff'],
+        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 4],
+        'fill-extrusion-base':   ['coalesce', ['get', 'render_min_height'], 0],
+        'fill-extrusion-opacity': 0.9,
+        'fill-extrusion-ambient-occlusion-intensity': 0.4,
+        'fill-extrusion-ambient-occlusion-radius': 3,
+      },
+    });
+  });
+}
+
+function setPitch(val)   { if (map3d) map3d.setPitch(Number(val)); document.getElementById('pitchVal').textContent = val + '°'; }
+function setTerrain(val) { const e = Number(val); if (map3d) map3d.setTerrain({ source: 'terrain', exaggeration: e }); document.getElementById('terrainVal').textContent = e.toFixed(1) + '×'; }
+function toggleBuildings() { const on = document.getElementById('buildingsToggle').checked; if (map3d && map3d.getLayer('osm-3d-buildings')) map3d.setLayoutProperty('osm-3d-buildings', 'visibility', on ? 'visible' : 'none'); }
+
+// ── Globe — CesiumJS ──────────────────────────────────────────────────────────
+async function initCesium() {
+  if (cesiumViewer) { startRotation(); return; }
+
+  document.getElementById('cesium-loading').style.display = 'flex';
+  window.CESIUM_BASE_URL = CESIUM_BASE;
+  await loadScript(CESIUM_BASE + 'Cesium.js');
+  loadLink(CESIUM_BASE + 'Widgets/widgets.css');
+  document.getElementById('cesium-loading').style.display = 'none';
+
+  cesiumViewer = new Cesium.Viewer('mapGlobe', {
+    baseLayerPicker: false, geocoder: false, homeButton: true,
+    sceneModePicker: true, navigationHelpButton: true,
+    animation: false, timeline: false, fullscreenButton: false,
+    infoBox: false, selectionIndicator: false,
+    creditContainer: document.getElementById('cesium-credit'),
+  });
+
+  cesiumViewer.imageryLayers.removeAll();
+  cesiumViewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    subdomains: ['a', 'b', 'c'], maximumLevel: 19,
+    credit: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }));
+  cesiumViewer.terrainProvider = new Cesium.EllipsoidTerrainProvider();
+  cesiumViewer.scene.globe.enableLighting = true;
+  cesiumViewer.scene.skyAtmosphere.show   = true;
+
+  cesiumViewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(20, 10, 18_000_000),
+    orientation: { heading: 0, pitch: -Cesium.Math.toRadians(25), roll: 0 },
+    duration: 3,
+    complete: () => { startRotation(); startFlightTracking(); },
+  });
+
+  cesiumViewer.camera.moveStart.addEventListener(stopRotation);
+}
+
+function startRotation() {
+  if (!cesiumViewer || rotateRemover) return;
+  if (!document.getElementById('rotateToggle')?.checked) return;
+  rotateRemover = cesiumViewer.scene.preRender.addEventListener(() => {
+    cesiumViewer.scene.camera.rotate(Cesium.Cartesian3.UNIT_Z, -0.0004);
+  });
+}
+function stopRotation() { if (rotateRemover) { rotateRemover(); rotateRemover = null; } }
+function toggleRotate() { document.getElementById('rotateToggle').checked ? startRotation() : stopRotation(); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GREAT-CIRCLE MATH
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const φ1 = lat1 * D2R, φ2 = lat2 * D2R;
+  const Δφ = (lat2 - lat1) * D2R, Δλ = (lon2 - lon1) * D2R;
+  const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(a));
+}
+
+// Spherical linear interpolation along the great circle (t = 0..1)
+function interpGC(lon1, lat1, lon2, lat2, t) {
+  const φ1 = lat1 * D2R, λ1 = lon1 * D2R;
+  const φ2 = lat2 * D2R, λ2 = lon2 * D2R;
+  const Δφ = φ2 - φ1, Δλ = λ2 - λ1;
+  const a  = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  const d  = 2 * Math.asin(Math.sqrt(a));
+  if (d < 1e-9) return [lon1, lat1];
+  const A = Math.sin((1 - t) * d) / Math.sin(d);
+  const B = Math.sin(t * d)       / Math.sin(d);
+  const x = A * Math.cos(φ1) * Math.cos(λ1) + B * Math.cos(φ2) * Math.cos(λ2);
+  const y = A * Math.cos(φ1) * Math.sin(λ1) + B * Math.cos(φ2) * Math.sin(λ2);
+  const z = A * Math.sin(φ1)                 + B * Math.sin(φ2);
+  return [Math.atan2(y, x) * R2D, Math.atan2(z, Math.sqrt(x * x + y * y)) * R2D];
+}
+
+// Progress of plane along dep→arr route (0 = just departed, 1 = arrived)
+function routeProgress(dep, arr, planeLon, planeLat) {
+  const total = haversineKm(dep.lat, dep.lon, arr.lat, arr.lon);
+  if (total < 1) return 0;
+  return Math.max(0, Math.min(1, haversineKm(dep.lat, dep.lon, planeLat, planeLon) / total));
+}
+
+// Build a flat [lon,lat,alt, …] array for a parabolic arc between two airports
+function buildArcPositions(dep, arr) {
+  const N      = 80;
+  const distKm = haversineKm(dep.lat, dep.lon, arr.lat, arr.lon);
+  const peakM  = Math.min(11_500, distKm * 50); // scale peak with distance
+  const pts    = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const [lon, lat] = interpGC(dep.lon, dep.lat, arr.lon, arr.lat, t);
+    const alt = peakM * Math.sin(Math.PI * t);    // parabolic height
+    pts.push(lon, lat, alt);
+  }
+  return pts;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FLIGHT TRACKING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let billboards    = null; // Cesium.BillboardCollection — one per plane
+let arcCollection = null; // Cesium.PolylineCollection  — one per route
+let flightMap     = new Map(); // icao24 → { bb, d }
+let routeMap      = new Map(); // icao24 → { arc, depEnt, arrEnt, dep, arr }
+let selectedIcao  = null;
+let pathEntities  = [];       // fallback projected-path entities (no-route flights)
+let planeCanvas   = null;
+
+// Route fetch queue
+const routeQueue   = [];         // [{ icao24, cs }]
+const routeFetched = new Set();  // callsigns already queued
+
+// Plane icon — white silhouette pointing north
+function getPlaneCanvas() {
+  if (planeCanvas) return planeCanvas;
+  const N = 32, m = N / 2;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0,0,0,0.6)';
+  ctx.shadowBlur  = 3;
+  ctx.beginPath();
+  ctx.moveTo(m,     1    ); ctx.lineTo(m+3.5, m+2  ); ctx.lineTo(N-2,  m+6  );
+  ctx.lineTo(N-2,   m+8.5); ctx.lineTo(m+3,   m+5  ); ctx.lineTo(m+4,  N-3  );
+  ctx.lineTo(m,     N-5  ); ctx.lineTo(m-4,   N-3  ); ctx.lineTo(m-3,  m+5  );
+  ctx.lineTo(2,     m+8.5); ctx.lineTo(2,     m+6  ); ctx.lineTo(m-3.5,m+2  );
+  ctx.closePath(); ctx.fill();
+  planeCanvas = c;
+  return c;
+}
+
+function altColor(alt) {
+  if (!alt || alt < 2000)  return Cesium.Color.fromCssColorString('#00ff88');
+  if (alt < 6000)          return Cesium.Color.fromCssColorString('#ffdd00');
+  if (alt < 9500)          return Cesium.Color.fromCssColorString('#00ccff');
+                           return Cesium.Color.fromCssColorString('#a080ff');
+}
+
+// ── Initialise collections and start polling ──────────────────────────────────
+async function startFlightTracking() {
+  if (billboards) return;
+
+  billboards = cesiumViewer.scene.primitives.add(
+    new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
+  );
+  arcCollection = cesiumViewer.scene.primitives.add(new Cesium.PolylineCollection());
+
+  // Click handler — picks billboards and point entities
+  const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
+  handler.setInputAction((e) => {
+    const picked = cesiumViewer.scene.pick(e.position);
+    if (Cesium.defined(picked) && picked.primitive === billboards) {
+      selectFlight(picked.id);
+    } else {
+      deselectFlight();
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  await refreshFlights();
+  setInterval(refreshFlights, 15_000);
+  setInterval(drainRouteQueue, 400); // ~2.5 route fetches / sec
+}
+
+async function refreshFlights() {
+  try {
+    const r = await fetch('/api/flights');
+    if (!r.ok) return;
+    const { states } = await r.json();
+    if (Array.isArray(states)) applyStates(states);
+  } catch (e) { console.warn('Flight fetch:', e.message); }
+}
+
+function applyStates(states) {
+  const seen = new Set();
+
+  for (const s of states) {
+    const [icao24, cs, country,,,lon, lat, baro,, onGround, spd, hdg, vr,, geo] = s;
+    if (onGround || lon == null || lat == null) continue;
+
+    const alt     = geo || baro || 10_000;
+    const heading = hdg  ?? 0;
+    const speed   = spd  ?? 0;
+    const cs_trim = (cs || '').trim() || icao24;
+    seen.add(icao24);
+
+    // Where to draw the billboard — on the arc if route known, else real GPS
+    let bbLon = lon, bbLat = lat;
+    let progress = null;
+    const re = routeMap.get(icao24);
+    if (re) {
+      progress = routeProgress(re.dep, re.arr, lon, lat);
+      [bbLon, bbLat] = interpGC(re.dep.lon, re.dep.lat, re.arr.lon, re.arr.lat, progress);
+      re.progress = progress; // keep fresh for info panel
+    }
+
+    if (flightMap.has(icao24)) {
+      const { bb, d } = flightMap.get(icao24);
+      bb.position = Cesium.Cartesian3.fromDegrees(bbLon, bbLat, alt);
+      bb.rotation = -Cesium.Math.toRadians(heading);
+      if (icao24 !== selectedIcao) bb.color = altColor(alt);
+      Object.assign(d, { lon, lat, alt, heading, speed, cs: cs_trim, country, vr });
+    } else {
+      const bb = billboards.add({
+        id:       icao24,
+        position: Cesium.Cartesian3.fromDegrees(bbLon, bbLat, alt),
+        image:    getPlaneCanvas(),
+        scale:    0.55,
+        rotation: -Cesium.Math.toRadians(heading),
+        color:    altColor(alt),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      });
+      flightMap.set(icao24, {
+        bb,
+        d: { icao24, cs: cs_trim, country, lon, lat, alt, heading, speed, vr },
+      });
+      enqueueRoute(icao24, cs_trim);
+    }
+  }
+
+  // Remove planes no longer in feed
+  for (const [icao, { bb }] of flightMap) {
+    if (!seen.has(icao)) {
+      billboards.remove(bb);
+      removeRouteViz(icao);
+      flightMap.delete(icao);
+    }
+  }
+
+  document.getElementById('flight-count').textContent =
+    flightMap.size.toLocaleString() + ' flights live';
+}
+
+// ── Route fetch queue ─────────────────────────────────────────────────────────
+function enqueueRoute(icao24, cs) {
+  if (!cs || routeFetched.has(cs)) return;
+  routeFetched.add(cs);
+  routeQueue.push({ icao24, cs });
+}
+
+async function drainRouteQueue() {
+  const item = routeQueue.shift();
+  if (!item) return;
+  const { icao24, cs } = item;
+  try {
+    const r = await fetch(`/api/route/${encodeURIComponent(cs)}`);
+    if (r.ok && flightMap.has(icao24)) {
+      buildRouteViz(icao24, await r.json());
+    }
+  } catch { /* no route data — plane stays as billboard only */ }
+}
+
+// ── Route visualisation ───────────────────────────────────────────────────────
+function buildRouteViz(icao24, route) {
+  if (routeMap.has(icao24)) return; // already built
+  const { dep, arr } = route;
+
+  // Arc — PolylineCollection primitive
+  const arcPts = buildArcPositions(dep, arr);
+  const arc = arcCollection.add({
+    positions: Cesium.Cartesian3.fromDegreesArrayHeights(arcPts),
+    width: 1.8,
+    material: Cesium.Material.fromType('PolylineGlow', {
+      glowPower: 0.15,
+      color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
+    }),
+  });
+
+  // Departure marker — green dot + hidden label
+  const depEnt = cesiumViewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(dep.lon, dep.lat, 150),
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString('#00ff88'),
+      outlineColor: Cesium.Color.BLACK,
+      outlineWidth: 1.5,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    label: {
+      text: dep.icao,
+      font: '12px monospace',
+      fillColor: Cesium.Color.fromCssColorString('#00ff88'),
+      outlineColor: Cesium.Color.BLACK,
+      outlineWidth: 2,
+      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+      pixelOffset: new Cesium.Cartesian2(0, -18),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      show: false,
+    },
+  });
+
+  // Arrival marker — red dot + hidden label
+  const arrEnt = cesiumViewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(arr.lon, arr.lat, 150),
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString('#ff4455'),
+      outlineColor: Cesium.Color.BLACK,
+      outlineWidth: 1.5,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+    label: {
+      text: arr.icao,
+      font: '12px monospace',
+      fillColor: Cesium.Color.fromCssColorString('#ff4455'),
+      outlineColor: Cesium.Color.BLACK,
+      outlineWidth: 2,
+      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+      pixelOffset: new Cesium.Cartesian2(0, -18),
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      show: false,
+    },
+  });
+
+  routeMap.set(icao24, { arc, depEnt, arrEnt, dep, arr, progress: 0 });
+
+  // Snap plane to arc immediately
+  const { bb, d } = flightMap.get(icao24) || {};
+  if (bb) {
+    const t = routeProgress(dep, arr, d.lon, d.lat);
+    const [ln, lt] = interpGC(dep.lon, dep.lat, arr.lon, arr.lat, t);
+    bb.position = Cesium.Cartesian3.fromDegrees(ln, lt, d.alt);
+    routeMap.get(icao24).progress = t;
+  }
+}
+
+function removeRouteViz(icao24) {
+  const re = routeMap.get(icao24);
+  if (!re) return;
+  arcCollection.remove(re.arc);
+  cesiumViewer.entities.remove(re.depEnt);
+  cesiumViewer.entities.remove(re.arrEnt);
+  routeMap.delete(icao24);
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────────
+function selectFlight(icao24) {
+  deselectFlight();
+  const entry = flightMap.get(icao24);
+  if (!entry) return;
+  selectedIcao = icao24;
+  stopRotation();
+
+  // Highlight billboard
+  entry.bb.color = Cesium.Color.ORANGE;
+  entry.bb.scale = 1.1;
+
+  const re = routeMap.get(icao24);
+  if (re) {
+    // Show airport labels and enlarge markers
+    re.depEnt.label.show = true;
+    re.arrEnt.label.show = true;
+    re.depEnt.point.pixelSize = 13;
+    re.arrEnt.point.pixelSize = 13;
+    // Brighten the arc
+    re.arc.material = Cesium.Material.fromType('PolylineGlow', {
+      glowPower: 0.35,
+      color: Cesium.Color.ORANGE.withAlpha(0.85),
+    });
+  } else {
+    // No route data — draw heading-projection trail
+    drawProjectedPath(entry.d);
+  }
+
+  renderInfoPanel(entry.d, re || null);
+}
+
+function deselectFlight() {
+  if (selectedIcao) {
+    const entry = flightMap.get(selectedIcao);
+    if (entry) { entry.bb.color = altColor(entry.d.alt); entry.bb.scale = 0.55; }
+
+    const re = routeMap.get(selectedIcao);
+    if (re) {
+      re.depEnt.label.show = false;
+      re.arrEnt.label.show = false;
+      re.depEnt.point.pixelSize = 8;
+      re.arrEnt.point.pixelSize = 8;
+      re.arc.material = Cesium.Material.fromType('PolylineGlow', {
+        glowPower: 0.15,
+        color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
+      });
+    }
+  }
+
+  // Remove fallback path
+  pathEntities.forEach(e => cesiumViewer.entities.remove(e));
+  pathEntities = [];
+
+  selectedIcao = null;
+  document.getElementById('flight-info').classList.add('hidden');
+}
+
+// Fallback: heading projection for flights without route data
+function gcPoints(lon, lat, alt, heading, distKm, steps) {
+  const d = distKm / 6371, θ = heading * D2R;
+  const φ1 = lat * D2R, λ1 = lon * D2R;
+  const pts = [];
+  for (let i = 0; i <= steps; i++) {
+    const di = d * (i / steps);
+    const sinφ = Math.sin(φ1) * Math.cos(di) + Math.cos(φ1) * Math.sin(di) * Math.cos(θ);
+    const φ2 = Math.asin(Math.max(-1, Math.min(1, sinφ)));
+    const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(di) * Math.cos(φ1), Math.cos(di) - Math.sin(φ1) * Math.sin(φ2));
+    pts.push(λ2 * R2D, φ2 * R2D, alt);
+  }
+  return pts;
+}
+
+function drawProjectedPath({ lon, lat, alt, heading }) {
+  pathEntities.forEach(e => cesiumViewer.entities.remove(e));
+  pathEntities = [];
+
+  const behind = gcPoints(lon, lat, alt, (heading + 180) % 360, 1200, 30);
+  pathEntities.push(cesiumViewer.entities.add({
+    polyline: { positions: Cesium.Cartesian3.fromDegreesArrayHeights(behind), width: 1.8,
+      material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.ORANGE.withAlpha(0.4), dashLength: 18 }) },
+  }));
+
+  const ahead = gcPoints(lon, lat, alt, heading, 3200, 60);
+  pathEntities.push(cesiumViewer.entities.add({
+    polyline: { positions: Cesium.Cartesian3.fromDegreesArrayHeights(ahead), width: 2.5,
+      material: new Cesium.PolylineGlowMaterialProperty({ glowPower: 0.3, color: Cesium.Color.ORANGE.withAlpha(0.9) }) },
+  }));
+}
+
+// ── Info panel ────────────────────────────────────────────────────────────────
+function renderInfoPanel({ icao24, cs, country, alt, speed, heading, vr }, routeEntry) {
+  document.getElementById('fi-cs').textContent      = cs || icao24;
+  document.getElementById('fi-country').textContent = country  || '—';
+  document.getElementById('fi-alt').textContent     = alt   ? Math.round(alt).toLocaleString() + ' m'  : '—';
+  document.getElementById('fi-spd').textContent     = speed ? Math.round(speed * 3.6) + ' km/h'        : '—';
+  document.getElementById('fi-hdg').textContent     = heading != null ? heading.toFixed(0) + '°'        : '—';
+  document.getElementById('fi-vr').textContent      = vr    ? (vr > 0 ? '+' : '') + vr.toFixed(1) + ' m/s' : '—';
+  document.getElementById('fi-icao').textContent    = icao24;
+
+  const routeSection = document.getElementById('fi-route');
+  const legend       = document.getElementById('fi-legend');
+
+  if (routeEntry) {
+    const { dep, arr, progress } = routeEntry;
+    const pct = Math.round(progress * 100);
+    document.getElementById('fi-dep-icao').textContent  = dep.icao;
+    document.getElementById('fi-dep-name').textContent  = dep.name;
+    document.getElementById('fi-arr-icao').textContent  = arr.icao;
+    document.getElementById('fi-arr-name').textContent  = arr.name;
+    document.getElementById('fi-prog-fill').style.width = pct + '%';
+    document.getElementById('fi-prog-plane').style.left = pct + '%';
+    document.getElementById('fi-prog-pct').textContent  = pct + '%';
+    routeSection.classList.remove('hidden');
+    legend.classList.add('hidden');
+  } else {
+    routeSection.classList.add('hidden');
+    legend.classList.remove('hidden');
+  }
+
+  document.getElementById('flight-info').classList.remove('hidden');
+}
+
+// ── Shared navigation ─────────────────────────────────────────────────────────
+function goTo(lat, lng, zoom) {
+  nav = { lat, lng, zoom };
+  if (map2d) map2d.setView([lat, lng], zoom);
+  if (map3d) map3d.flyTo({ center: [lng, lat], zoom, speed: 1.4 });
+  if (cesiumViewer) {
+    stopRotation();
+    cesiumViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat - 8, 3_000_000),
+      orientation: { heading: 0, pitch: -Cesium.Math.toRadians(35), roll: 0 },
+      duration: 2,
+    });
+  }
+}
+
+window.showTab         = showTab;
+window.goTo            = goTo;
+window.setPitch        = setPitch;
+window.setTerrain      = setTerrain;
+window.toggleBuildings = toggleBuildings;
+window.toggleRotate    = toggleRotate;
+window.closeFlight     = deselectFlight;
+
+showTab('2d');

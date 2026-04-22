@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "cesium": "^1.140.0",
+    "express": "^5.2.1",
+    "leaflet": "^1.9.4",
+    "maplibre-gl": "^5.23.0"
+  }
+}
