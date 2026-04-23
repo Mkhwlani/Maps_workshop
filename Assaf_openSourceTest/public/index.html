@@ -31,12 +31,34 @@
     <div class="panel active" id="panel-2d">
       <div class="badge">2D · Leaflet · OpenStreetMap</div>
       <div id="map2d"></div>
+      <aside id="controls2d" class="weather-controls hidden">
+        <p class="ctrl-title">Weather</p>
+        <select id="weather2d" onchange="setWeatherLayer2d(this.value)">
+          <option value="">Off</option>
+          <option value="clouds_new">Clouds</option>
+          <option value="precipitation_new">Rain</option>
+          <option value="temp_new">Temperature</option>
+          <option value="wind_new">Wind</option>
+          <option value="pressure_new">Pressure</option>
+        </select>
+      </aside>
     </div>
 
     <!-- ── 3D City panel ── -->
     <div class="panel" id="panel-3d">
       <div class="badge">3D City · MapLibre GL · OpenStreetMap</div>
       <div id="map3d"></div>
+      <aside id="weather3d" class="weather-controls hidden">
+        <p class="ctrl-title">Weather</p>
+        <select id="weather3dSelect" onchange="setWeatherLayer3d(this.value)">
+          <option value="">Off</option>
+          <option value="clouds_new">Clouds</option>
+          <option value="precipitation_new">Rain</option>
+          <option value="temp_new">Temperature</option>
+          <option value="wind_new">Wind</option>
+          <option value="pressure_new">Pressure</option>
+        </select>
+      </aside>
       <aside id="controls3d">
         <p class="ctrl-title">3D Controls</p>
         <label class="ctrl-row">
@@ -112,6 +134,15 @@
         </div>
       </div>
 
+      <!-- Camera viewer popup -->
+      <div id="cam-viewer" class="cam-viewer hidden">
+        <div class="cam-header">
+          <span id="cam-title">Camera</span>
+          <button class="fi-close" onclick="closeCam()">✕</button>
+        </div>
+        <div id="cam-body" class="cam-body"></div>
+      </div>
+
       <!-- Controls -->
       <aside id="controlsGlobe">
         <div class="ctrl-toggle">
@@ -121,7 +152,34 @@
             <span class="knob"></span>
           </label>
         </div>
+        <div class="ctrl-toggle">
+          <span>Military flights</span>
+          <label class="toggle">
+            <input type="checkbox" id="milToggle" onchange="toggleMilitary()"/>
+            <span class="knob"></span>
+          </label>
+        </div>
+        <div class="ctrl-toggle">
+          <span>Weather</span>
+          <select id="weatherGlobe" class="ctrl-select" onchange="setWeatherLayerGlobe(this.value)">
+            <option value="">Off</option>
+            <option value="clouds_new">Clouds</option>
+            <option value="precipitation_new">Rain</option>
+            <option value="temp_new">Temperature</option>
+            <option value="wind_new">Wind</option>
+            <option value="pressure_new">Pressure</option>
+          </select>
+        </div>
+        <div class="ctrl-toggle">
+          <span>Cameras</span>
+          <label class="toggle">
+            <input type="checkbox" id="camToggle" onchange="toggleCameras()"/>
+            <span class="knob"></span>
+          </label>
+        </div>
         <div id="flight-count" class="flight-count">Loading flights…</div>
+        <div id="mil-count" class="flight-count mil">—</div>
+        <div id="cam-count" class="flight-count cam">—</div>
       </aside>
     </div>
 

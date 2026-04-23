@@ -9,6 +9,19 @@ let nav = { lat: 24.7136, lng: 46.6753, zoom: 15 };
 let map2d, map3d, cesiumViewer;
 let rotateRemover = null;
 
+// Weather state
+let weatherAvailable = false;
+let weatherLayer2d   = null;
+let weatherLayerId3d = null;
+let weatherLayerGlobe = null;
+
+// Camera state
+let camAvailable    = false;
+let camEnabled      = false;
+let camEntities     = [];
+let camDataCache    = new Map();
+let camFetchPending = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -22,6 +35,22 @@ function loadLink(href) {
     Object.assign(document.createElement('link'), { rel: 'stylesheet', href })
   );
 }
+
+// ── Check API availability on load ───────────────────────────────────────────
+(async function checkApis() {
+  try {
+    const [wRes, cRes] = await Promise.all([
+      fetch('/api/weather/config').then(r => r.json()),
+      fetch('/api/webcams/config').then(r => r.json()),
+    ]);
+    weatherAvailable = wRes.available;
+    camAvailable = cRes.available;
+    if (weatherAvailable) {
+      document.getElementById('controls2d')?.classList.remove('hidden');
+      document.getElementById('weather3d')?.classList.remove('hidden');
+    }
+  } catch {}
+})();
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
 function showTab(name) {
@@ -188,6 +217,13 @@ let selectedIcao  = null;
 let pathEntities  = [];       // fallback projected-path entities (no-route flights)
 let planeCanvas   = null;
 
+// Military flight tracking
+let milBillboards = null;
+let milFlightMap  = new Map(); // hex → { bb, d }
+let milInterval   = null;
+let milPlaneCanvas = null;
+let milEnabled    = false;
+
 // Route fetch queue
 const routeQueue   = [];         // [{ icao24, cs }]
 const routeFetched = new Set();  // callsigns already queued
@@ -233,9 +269,17 @@ async function startFlightTracking() {
   handler.setInputAction((e) => {
     const picked = cesiumViewer.scene.pick(e.position);
     if (Cesium.defined(picked) && picked.primitive === billboards) {
+      closeCam();
       selectFlight(picked.id);
+    } else if (Cesium.defined(picked) && picked.primitive === milBillboards) {
+      closeCam();
+      selectMilFlight(picked.id);
+    } else if (Cesium.defined(picked) && picked.id && picked.id.properties && picked.id.properties.camId) {
+      deselectFlight();
+      openCam(picked.id);
     } else {
       deselectFlight();
+      closeCam();
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
@@ -449,6 +493,12 @@ function selectFlight(icao24) {
 
 function deselectFlight() {
   if (selectedIcao) {
+    if (selectedIcao.startsWith('mil_')) {
+      const hex = selectedIcao.replace('mil_', '');
+      const me = milFlightMap.get(hex);
+      if (me) { me.bb.color = Cesium.Color.fromCssColorString('#ff2244'); me.bb.scale = 0.65; }
+    }
+
     const entry = flightMap.get(selectedIcao);
     if (entry) { entry.bb.color = altColor(entry.d.alt); entry.bb.scale = 0.55; }
 
@@ -538,6 +588,329 @@ function renderInfoPanel({ icao24, cs, country, alt, speed, heading, vr }, route
   document.getElementById('flight-info').classList.remove('hidden');
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// MILITARY FLIGHT TRACKING (ADS-B Exchange)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getMilPlaneCanvas() {
+  if (milPlaneCanvas) return milPlaneCanvas;
+  const N = 32, m = N / 2;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#ff2244';
+  ctx.shadowColor = 'rgba(255,0,0,0.6)';
+  ctx.shadowBlur  = 4;
+  ctx.beginPath();
+  ctx.moveTo(m,     1    ); ctx.lineTo(m+3.5, m+2  ); ctx.lineTo(N-2,  m+6  );
+  ctx.lineTo(N-2,   m+8.5); ctx.lineTo(m+3,   m+5  ); ctx.lineTo(m+4,  N-3  );
+  ctx.lineTo(m,     N-5  ); ctx.lineTo(m-4,   N-3  ); ctx.lineTo(m-3,  m+5  );
+  ctx.lineTo(2,     m+8.5); ctx.lineTo(2,     m+6  ); ctx.lineTo(m-3.5,m+2  );
+  ctx.closePath(); ctx.fill();
+  milPlaneCanvas = c;
+  return c;
+}
+
+function toggleMilitary() {
+  milEnabled = document.getElementById('milToggle').checked;
+  if (milEnabled) {
+    startMilitaryTracking();
+  } else {
+    stopMilitaryTracking();
+  }
+}
+
+function startMilitaryTracking() {
+  if (!cesiumViewer) return;
+  if (!milBillboards) {
+    milBillboards = cesiumViewer.scene.primitives.add(
+      new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
+    );
+  }
+  refreshMilitary();
+  milInterval = setInterval(refreshMilitary, 15_000);
+}
+
+function stopMilitaryTracking() {
+  if (milInterval) { clearInterval(milInterval); milInterval = null; }
+  if (milBillboards) {
+    for (const [, { bb }] of milFlightMap) milBillboards.remove(bb);
+    milFlightMap.clear();
+  }
+  document.getElementById('mil-count').textContent = '—';
+}
+
+async function refreshMilitary() {
+  try {
+    const r = await fetch('/api/military');
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        document.getElementById('mil-count').textContent = 'No API key set';
+      }
+      return;
+    }
+    const data = await r.json();
+    const ac = data.ac || [];
+    applyMilStates(ac);
+  } catch (e) { console.warn('Military fetch:', e.message); }
+}
+
+function applyMilStates(aircraft) {
+  const seen = new Set();
+
+  for (const ac of aircraft) {
+    const hex     = ac.hex;
+    const lat     = ac.lat;
+    const lon     = ac.lon;
+    const alt     = ac.alt_baro === 'ground' ? 0 : (ac.alt_geom || ac.alt_baro || 0);
+    const heading = ac.track   ?? 0;
+    const speed   = ac.gs      ?? 0;
+    const cs      = (ac.flight || '').trim() || hex;
+    const type    = ac.t || '';
+    const squawk  = ac.squawk || '';
+
+    if (lat == null || lon == null) continue;
+    if (alt === 0) continue; // skip grounded
+    seen.add(hex);
+
+    const altM = alt * 0.3048; // ADS-B reports in feet
+
+    if (milFlightMap.has(hex)) {
+      const { bb, d } = milFlightMap.get(hex);
+      bb.position = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
+      bb.rotation = -Cesium.Math.toRadians(heading);
+      Object.assign(d, { lon, lat, alt: altM, heading, speed, cs, type, squawk });
+    } else {
+      const bb = milBillboards.add({
+        id:       'mil_' + hex,
+        position: Cesium.Cartesian3.fromDegrees(lon, lat, altM),
+        image:    getMilPlaneCanvas(),
+        scale:    0.65,
+        rotation: -Cesium.Math.toRadians(heading),
+        color:    Cesium.Color.fromCssColorString('#ff2244'),
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      });
+      milFlightMap.set(hex, {
+        bb,
+        d: { hex, cs, lon, lat, alt: altM, heading, speed, type, squawk, military: true },
+      });
+    }
+  }
+
+  for (const [hex, { bb }] of milFlightMap) {
+    if (!seen.has(hex)) {
+      milBillboards.remove(bb);
+      milFlightMap.delete(hex);
+    }
+  }
+
+  document.getElementById('mil-count').textContent =
+    milFlightMap.size.toLocaleString() + ' military';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEATHER LAYERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function setWeatherLayer2d(layer) {
+  if (weatherLayer2d) { map2d.removeLayer(weatherLayer2d); weatherLayer2d = null; }
+  if (!layer || !map2d) return;
+  weatherLayer2d = L.tileLayer('/api/weather/tile/' + layer + '/{z}/{x}/{y}', {
+    maxZoom: 19, opacity: 0.6, attribution: 'Weather &copy; OpenWeatherMap',
+  }).addTo(map2d);
+}
+
+function setWeatherLayer3d(layer) {
+  if (!map3d) return;
+  if (weatherLayerId3d && map3d.getLayer(weatherLayerId3d)) {
+    map3d.removeLayer(weatherLayerId3d);
+    map3d.removeSource('weather-tiles');
+    weatherLayerId3d = null;
+  }
+  if (!layer) return;
+  map3d.addSource('weather-tiles', {
+    type: 'raster',
+    tiles: ['/api/weather/tile/' + layer + '/{z}/{x}/{y}'],
+    tileSize: 256,
+  });
+  weatherLayerId3d = 'weather-overlay';
+  map3d.addLayer({
+    id: weatherLayerId3d,
+    type: 'raster',
+    source: 'weather-tiles',
+    paint: { 'raster-opacity': 0.5 },
+  });
+}
+
+function setWeatherLayerGlobe(layer) {
+  if (!cesiumViewer) return;
+  if (weatherLayerGlobe) {
+    cesiumViewer.imageryLayers.remove(weatherLayerGlobe);
+    weatherLayerGlobe = null;
+  }
+  if (!layer) return;
+  weatherLayerGlobe = cesiumViewer.imageryLayers.addImageryProvider(
+    new Cesium.UrlTemplateImageryProvider({
+      url: '/api/weather/tile/' + layer + '/{z}/{x}/{y}',
+      maximumLevel: 6,
+    })
+  );
+  weatherLayerGlobe.alpha = 0.55;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WEBCAM / CAMERA FEEDS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function getCamCanvas() {
+  const N = 20;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#00ccff';
+  ctx.shadowColor = 'rgba(0,200,255,0.7)';
+  ctx.shadowBlur = 4;
+  ctx.beginPath();
+  ctx.arc(N / 2, N / 2, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(N / 2, N / 2, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  return c;
+}
+
+let camCanvas = null;
+function getCamIcon() {
+  if (!camCanvas) camCanvas = getCamCanvas();
+  return camCanvas;
+}
+
+function toggleCameras() {
+  camEnabled = document.getElementById('camToggle').checked;
+  if (camEnabled) {
+    loadNearbyWebcams();
+    cesiumViewer.camera.moveEnd.addEventListener(loadNearbyWebcams);
+  } else {
+    cesiumViewer.camera.moveEnd.removeEventListener(loadNearbyWebcams);
+    clearCamEntities();
+    document.getElementById('cam-count').textContent = '—';
+  }
+}
+
+function clearCamEntities() {
+  camEntities.forEach(e => cesiumViewer.entities.remove(e));
+  camEntities = [];
+}
+
+async function loadNearbyWebcams() {
+  if (!cesiumViewer || !camEnabled || camFetchPending) return;
+
+  const cam = cesiumViewer.camera;
+  const cart = cam.positionCartographic;
+  if (!cart) return;
+  const lat = Cesium.Math.toDegrees(cart.latitude);
+  const lon = Cesium.Math.toDegrees(cart.longitude);
+  const altKm = cart.height / 1000;
+  const radius = Math.min(250, Math.max(10, Math.round(altKm / 20)));
+
+  const key = `${lat.toFixed(1)},${lon.toFixed(1)},${radius}`;
+  if (camDataCache.has(key)) {
+    renderCams(camDataCache.get(key));
+    return;
+  }
+
+  camFetchPending = true;
+  try {
+    const r = await fetch(`/api/webcams?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius=${radius}`);
+    if (!r.ok) {
+      if (r.status === 503) document.getElementById('cam-count').textContent = 'No API key';
+      return;
+    }
+    const data = await r.json();
+    const webcams = data.webcams || [];
+    camDataCache.set(key, webcams);
+    renderCams(webcams);
+  } catch (e) { console.warn('Webcam fetch:', e.message); }
+  finally { camFetchPending = false; }
+}
+
+function renderCams(webcams) {
+  clearCamEntities();
+  for (const wc of webcams) {
+    const loc = wc.location;
+    if (!loc) continue;
+    const ent = cesiumViewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(loc.longitude, loc.latitude, 200),
+      billboard: {
+        image: getCamIcon(),
+        scale: 1.0,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      properties: {
+        camId: wc.webcamId || wc.id,
+        title: wc.title || 'Webcam',
+        thumbnail: wc.images?.current?.preview || wc.images?.current?.thumbnail || '',
+        player: wc.player?.day?.embed || wc.player?.lifetime?.embed || '',
+      },
+    });
+    camEntities.push(ent);
+  }
+  document.getElementById('cam-count').textContent = camEntities.length + ' cameras';
+}
+
+function openCam(entity) {
+  const props = entity.properties;
+  const title = props.title?.getValue() || 'Webcam';
+  const thumb = props.thumbnail?.getValue() || '';
+  const player = props.player?.getValue() || '';
+
+  document.getElementById('cam-title').textContent = title;
+  const body = document.getElementById('cam-body');
+
+  if (player) {
+    body.innerHTML = `<iframe src="${player}" allowfullscreen></iframe>`;
+  } else if (thumb) {
+    body.innerHTML = `<img src="${thumb}" alt="${title}"/>`;
+  } else {
+    body.innerHTML = '<span>No feed available</span>';
+  }
+
+  document.getElementById('flight-info').classList.add('hidden');
+  document.getElementById('cam-viewer').classList.remove('hidden');
+}
+
+function closeCam() {
+  document.getElementById('cam-viewer').classList.add('hidden');
+  document.getElementById('cam-body').innerHTML = '';
+}
+
+function selectMilFlight(bbId) {
+  deselectFlight();
+  const hex = bbId.replace('mil_', '');
+  const entry = milFlightMap.get(hex);
+  if (!entry) return;
+  entry.bb.color = Cesium.Color.ORANGE;
+  entry.bb.scale = 1.1;
+  selectedIcao = 'mil_' + hex;
+  stopRotation();
+  renderMilInfoPanel(entry.d);
+}
+
+function renderMilInfoPanel({ hex, cs, alt, speed, heading, type, squawk }) {
+  document.getElementById('fi-cs').textContent      = cs || hex;
+  document.getElementById('fi-country').textContent  = type ? 'MIL · ' + type : 'MILITARY';
+  document.getElementById('fi-alt').textContent      = alt ? Math.round(alt).toLocaleString() + ' m' : '—';
+  document.getElementById('fi-spd').textContent      = speed ? Math.round(speed * 1.852) + ' km/h' : '—';
+  document.getElementById('fi-hdg').textContent      = heading != null ? heading.toFixed(0) + '°' : '—';
+  document.getElementById('fi-vr').textContent       = squawk || '—';
+  document.getElementById('fi-icao').textContent     = hex;
+  document.getElementById('fi-route').classList.add('hidden');
+  document.getElementById('fi-legend').classList.add('hidden');
+  document.getElementById('flight-info').classList.remove('hidden');
+}
+
 // ── Shared navigation ─────────────────────────────────────────────────────────
 function goTo(lat, lng, zoom) {
   nav = { lat, lng, zoom };
@@ -553,12 +926,18 @@ function goTo(lat, lng, zoom) {
   }
 }
 
-window.showTab         = showTab;
-window.goTo            = goTo;
-window.setPitch        = setPitch;
-window.setTerrain      = setTerrain;
-window.toggleBuildings = toggleBuildings;
-window.toggleRotate    = toggleRotate;
-window.closeFlight     = deselectFlight;
+window.showTab              = showTab;
+window.goTo                 = goTo;
+window.setPitch             = setPitch;
+window.setTerrain           = setTerrain;
+window.toggleBuildings      = toggleBuildings;
+window.toggleRotate         = toggleRotate;
+window.toggleMilitary       = toggleMilitary;
+window.toggleCameras        = toggleCameras;
+window.closeFlight          = deselectFlight;
+window.closeCam             = closeCam;
+window.setWeatherLayer2d    = setWeatherLayer2d;
+window.setWeatherLayer3d    = setWeatherLayer3d;
+window.setWeatherLayerGlobe = setWeatherLayerGlobe;
 
 showTab('2d');
