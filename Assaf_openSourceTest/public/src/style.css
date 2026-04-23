@@ -437,7 +437,7 @@ main { flex: 1; position: relative; min-height: 0; }
 }
 
 /* ── Weather tile boost ── */
-.weather-tile { filter: saturate(2.5) contrast(1.5) brightness(1.2); }
+.weather-tile { filter: saturate(6) contrast(2.5) brightness(1.5); }
 
 /* ── Leaflet dark overrides ── */
 .leaflet-tile-pane { filter: brightness(0.82) saturate(0.85); }

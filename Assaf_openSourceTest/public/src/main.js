@@ -762,7 +762,7 @@ function setWeatherLayer2d(layer) {
   if (weatherLayer2d) { map2d.removeLayer(weatherLayer2d); weatherLayer2d = null; }
   if (!layer || !map2d) return;
   weatherLayer2d = L.tileLayer('/api/weather/tile/' + layer + '/{z}/{x}/{y}', {
-    maxZoom: 19, opacity: 0.85, attribution: 'Weather &copy; OpenWeatherMap',
+    maxZoom: 19, opacity: 1.0, attribution: 'Weather &copy; OpenWeatherMap',
     className: 'weather-tile',
   }).addTo(map2d);
 }
@@ -785,7 +785,7 @@ function setWeatherLayer3d(layer) {
     id: weatherLayerId3d,
     type: 'raster',
     source: 'weather-tiles',
-    paint: { 'raster-opacity': 0.85, 'raster-saturation': 0.8, 'raster-contrast': 0.4 },
+    paint: { 'raster-opacity': 1.0, 'raster-saturation': 1.0, 'raster-contrast': 1.0 },
   });
 }
 
@@ -802,10 +802,10 @@ function setWeatherLayerGlobe(layer) {
       maximumLevel: 6,
     })
   );
-  weatherLayerGlobe.alpha = 0.85;
-  weatherLayerGlobe.saturation = 3.0;
-  weatherLayerGlobe.contrast = 1.8;
-  weatherLayerGlobe.brightness = 1.3;
+  weatherLayerGlobe.alpha = 1.0;
+  weatherLayerGlobe.saturation = 8.0;
+  weatherLayerGlobe.contrast = 3.0;
+  weatherLayerGlobe.brightness = 1.6;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1003,6 +1003,42 @@ function renderMilInfoPanel({ hex, cs, alt, speed, heading, type, squawk }) {
   document.getElementById('flight-info').classList.remove('hidden');
 }
 
+// helper functions and featureS:
+
+
+// Zoom in and out for the Cesium globe
+function zoomIn() {
+  if (!cesiumViewer) return;
+  // Moves the camera a bit closer to what it’s looking at
+  cesiumViewer.camera.zoomIn(100000);
+}
+
+function zoomOut() {
+  if (!cesiumViewer) return;
+  // Moves the camera a bit farther away
+  cesiumViewer.camera.zoomOut(100000);
+}
+
+// Optional: extra zoom buttons that change camera height directly
+function zoomInFar()   { changeCameraHeight(-200_000); }
+function zoomOutFar()  { changeCameraHeight(+200_000); }
+
+function changeCameraHeight(delta) {
+  if (!cesiumViewer) return;
+
+  const pos = cesiumViewer.camera.position;
+  const carto = Cesium.Cartographic.fromCartesian(pos);
+  const height = Math.max(1, carto.height + delta);
+
+  const newPos = Cesium.Cartesian3.fromRadians(
+    carto.longitude,
+    carto.latitude,
+    height
+  );
+
+  cesiumViewer.camera.setView({ position: newPos });
+}
+
 // ── Shared navigation ─────────────────────────────────────────────────────────
 function goTo(lat, lng, zoom) {
   nav = { lat, lng, zoom };
@@ -1032,5 +1068,9 @@ window.closeCam             = closeCam;
 window.setWeatherLayer2d    = setWeatherLayer2d;
 window.setWeatherLayer3d    = setWeatherLayer3d;
 window.setWeatherLayerGlobe = setWeatherLayerGlobe;
+window.zoomIn      = zoomIn;
+window.zoomOut     = zoomOut;
+window.zoomInFar   = zoomInFar;
+window.zoomOutFar  = zoomOutFar;
 
 showTab('2d');
