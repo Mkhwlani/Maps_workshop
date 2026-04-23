@@ -199,8 +199,9 @@ main { flex: 1; position: relative; min-height: 0; }
 }
 #cesium-credit a { color: #7080ff; }
 
-/* Cesium widget dark overrides */
-.cesium-widget canvas { display: block; }
+/* Cesium widget — enable trackpad/touch zoom */
+.cesium-widget { touch-action: none; }
+.cesium-widget canvas { display: block; touch-action: none; }
 .cesium-viewer-toolbar { background: rgba(12,14,24,0.85) !important; }
 .cesium-button { background: #1e2240 !important; color: #b0b8e0 !important; border: 1px solid #2e3360 !important; }
 .cesium-button:hover { background: #2e3360 !important; }
@@ -434,6 +435,9 @@ main { flex: 1; position: relative; min-height: 0; }
   object-fit: cover;
   border: none;
 }
+
+/* ── Weather tile boost ── */
+.weather-tile { filter: saturate(2.5) contrast(1.5) brightness(1.2); }
 
 /* ── Leaflet dark overrides ── */
 .leaflet-tile-pane { filter: brightness(0.82) saturate(0.85); }

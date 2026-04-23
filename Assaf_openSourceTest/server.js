@@ -1,5 +1,7 @@
 const express = require('express');
+const compression = require('compression');
 const app = express();
+app.use(compression());
 
 const ADSBX_API_KEY = process.env.ADSBX_API_KEY || '';
 const ADSBX_BASE    = 'https://adsbexchange-com1.p.rapidapi.com';
@@ -63,14 +65,23 @@ const routeCache = new Map(); // callsign → { data|null, ts }
 const ROUTE_TTL  = 3_600_000; // 1 hour
 
 // ── Express ───────────────────────────────────────────────────────────────────
-app.use(express.static('public'));
-app.use('/node_modules', express.static('node_modules'));
+app.use(express.static('public', { maxAge: '1h' }));
+app.use('/node_modules', express.static('node_modules', { maxAge: '7d', immutable: true }));
+
+let flightCache = { data: null, ts: 0 };
+const FLIGHT_TTL = 30_000;
 
 app.get('/api/flights', async (req, res) => {
+  if (flightCache.data && Date.now() - flightCache.ts < FLIGHT_TTL) {
+    res.json(flightCache.data);
+    return;
+  }
   try {
     const r = await fetch('https://opensky-network.org/api/states/all');
     if (!r.ok) { res.status(r.status).json({ error: 'OpenSky error' }); return; }
-    res.json(await r.json());
+    const data = await r.json();
+    flightCache = { data, ts: Date.now() };
+    res.json(data);
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 

@@ -18,7 +18,8 @@ let weatherLayerGlobe = null;
 // Camera state
 let camAvailable    = false;
 let camEnabled      = false;
-let camEntities     = [];
+let camBillboards   = null;
+let camMap          = new Map(); // camId → { bb, data }
 let camDataCache    = new Map();
 let camFetchPending = false;
 
@@ -85,10 +86,15 @@ function initMapLibre3D() {
   map3d.addControl(new maplibregl.NavigationControl(), 'top-right');
   map3d.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
 
+  map3d.on('styleimagemissing', (e) => {
+    if (!map3d.hasImage(e.id)) {
+      map3d.addImage(e.id, { width: 1, height: 1, data: new Uint8Array(4) });
+    }
+  });
+
   map3d.on('load', () => {
-    map3d.addSource('terrain', { type: 'raster-dem', tiles: [TERRAIN_URL], tileSize: 256, encoding: 'terrarium' });
+    map3d.addSource('terrain', { type: 'raster-dem', tiles: [TERRAIN_URL], tileSize: 256, encoding: 'terrarium', maxzoom: 15 });
     map3d.setTerrain({ source: 'terrain', exaggeration: 1.5 });
-    map3d.addLayer({ id: 'sky', type: 'sky', paint: { 'sky-type': 'atmosphere', 'sky-atmosphere-sun': [0, 90], 'sky-atmosphere-sun-intensity': 15 } });
     map3d.addLayer({
       id: 'osm-3d-buildings', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building', minzoom: 13,
       paint: {
@@ -97,8 +103,6 @@ function initMapLibre3D() {
         'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 4],
         'fill-extrusion-base':   ['coalesce', ['get', 'render_min_height'], 0],
         'fill-extrusion-opacity': 0.9,
-        'fill-extrusion-ambient-occlusion-intensity': 0.4,
-        'fill-extrusion-ambient-occlusion-radius': 3,
       },
     });
   });
@@ -126,6 +130,26 @@ async function initCesium() {
     creditContainer: document.getElementById('cesium-credit'),
   });
 
+  const sscc = cesiumViewer.scene.screenSpaceCameraController;
+  sscc.enableZoom = true;
+  sscc.enableTilt = true;
+  sscc.enableRotate = true;
+  sscc.enableTranslate = true;
+  sscc.enableLook = true;
+  sscc.zoomEventTypes = [
+    Cesium.CameraEventType.WHEEL,
+    Cesium.CameraEventType.PINCH,
+    { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.SHIFT },
+  ];
+  sscc.tiltEventTypes = [
+    Cesium.CameraEventType.MIDDLE_DRAG,
+    Cesium.CameraEventType.PINCH,
+    { eventType: Cesium.CameraEventType.LEFT_DRAG, modifier: Cesium.KeyboardEventModifier.CTRL },
+  ];
+
+  // Mac trackpad pinch fires as wheel+ctrlKey — prevent browser zoom and let Cesium handle it
+  cesiumViewer.canvas.addEventListener('wheel', (e) => { e.preventDefault(); }, { passive: false });
+
   cesiumViewer.imageryLayers.removeAll();
   cesiumViewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -140,7 +164,7 @@ async function initCesium() {
     destination: Cesium.Cartesian3.fromDegrees(20, 10, 18_000_000),
     orientation: { heading: 0, pitch: -Cesium.Math.toRadians(25), roll: 0 },
     duration: 3,
-    complete: () => { startRotation(); startFlightTracking(); },
+    complete: () => { startRotation(); },
   });
 
   cesiumViewer.camera.moveStart.addEventListener(stopRotation);
@@ -216,6 +240,9 @@ let routeMap      = new Map(); // icao24 → { arc, depEnt, arrEnt, dep, arr }
 let selectedIcao  = null;
 let pathEntities  = [];       // fallback projected-path entities (no-route flights)
 let planeCanvas   = null;
+let flightInterval = null;
+let flightRouteInterval = null;
+let flightsEnabled = false;
 
 // Military flight tracking
 let milBillboards = null;
@@ -255,37 +282,58 @@ function altColor(alt) {
                            return Cesium.Color.fromCssColorString('#a080ff');
 }
 
-// ── Initialise collections and start polling ──────────────────────────────────
-async function startFlightTracking() {
-  if (billboards) return;
-
-  billboards = cesiumViewer.scene.primitives.add(
-    new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
-  );
-  arcCollection = cesiumViewer.scene.primitives.add(new Cesium.PolylineCollection());
-
-  // Click handler — picks billboards and point entities
+// ── Click handler (set up once) ──────────────────────────────────────────────
+let clickHandlerReady = false;
+function setupClickHandler() {
+  if (clickHandlerReady) return;
+  clickHandlerReady = true;
   const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
   handler.setInputAction((e) => {
     const picked = cesiumViewer.scene.pick(e.position);
-    if (Cesium.defined(picked) && picked.primitive === billboards) {
-      closeCam();
-      selectFlight(picked.id);
-    } else if (Cesium.defined(picked) && picked.primitive === milBillboards) {
-      closeCam();
-      selectMilFlight(picked.id);
-    } else if (Cesium.defined(picked) && picked.id && picked.id.properties && picked.id.properties.camId) {
-      deselectFlight();
-      openCam(picked.id);
-    } else {
-      deselectFlight();
-      closeCam();
-    }
+    if (!Cesium.defined(picked)) { deselectFlight(); closeCam(); return; }
+    if (picked.primitive === billboards)    { closeCam(); selectFlight(picked.id); return; }
+    if (picked.primitive === milBillboards) { closeCam(); selectMilFlight(picked.id); return; }
+    if (picked.primitive === camBillboards && picked.id) { deselectFlight(); openCam(picked.id); return; }
+    deselectFlight(); closeCam();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+}
 
+// ── Toggle flights on/off ────────────────────────────────────────────────────
+function toggleFlights() {
+  flightsEnabled = document.getElementById('flightToggle').checked;
+  flightsEnabled ? startFlightTracking() : stopFlightTracking();
+}
+
+async function startFlightTracking() {
+  if (!cesiumViewer) return;
+  setupClickHandler();
+  if (!billboards) {
+    billboards = cesiumViewer.scene.primitives.add(
+      new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
+    );
+  }
+  if (!arcCollection) {
+    arcCollection = cesiumViewer.scene.primitives.add(new Cesium.PolylineCollection());
+  }
   await refreshFlights();
-  setInterval(refreshFlights, 15_000);
-  setInterval(drainRouteQueue, 400); // ~2.5 route fetches / sec
+  flightInterval = setInterval(refreshFlights, 30_000);
+  flightRouteInterval = setInterval(drainRouteQueue, 400);
+}
+
+function stopFlightTracking() {
+  if (flightInterval) { clearInterval(flightInterval); flightInterval = null; }
+  if (flightRouteInterval) { clearInterval(flightRouteInterval); flightRouteInterval = null; }
+  deselectFlight();
+  if (billboards) {
+    for (const [, { bb }] of flightMap) billboards.remove(bb);
+    flightMap.clear();
+  }
+  if (arcCollection) {
+    for (const [icao] of routeMap) removeRouteViz(icao);
+  }
+  routeQueue.length = 0;
+  routeFetched.clear();
+  document.getElementById('flight-count').textContent = 'Flights off';
 }
 
 async function refreshFlights() {
@@ -334,7 +382,7 @@ function applyStates(states) {
         scale:    0.55,
         rotation: -Cesium.Math.toRadians(heading),
         color:    altColor(alt),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: Cesium.HeightReference.NONE,
       });
       flightMap.set(icao24, {
         bb,
@@ -400,7 +448,6 @@ function buildRouteViz(icao24, route) {
       color: Cesium.Color.fromCssColorString('#00ff88'),
       outlineColor: Cesium.Color.BLACK,
       outlineWidth: 1.5,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
     label: {
       text: dep.icao,
@@ -410,7 +457,6 @@ function buildRouteViz(icao24, route) {
       outlineWidth: 2,
       style: Cesium.LabelStyle.FILL_AND_OUTLINE,
       pixelOffset: new Cesium.Cartesian2(0, -18),
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
       show: false,
     },
   });
@@ -423,7 +469,6 @@ function buildRouteViz(icao24, route) {
       color: Cesium.Color.fromCssColorString('#ff4455'),
       outlineColor: Cesium.Color.BLACK,
       outlineWidth: 1.5,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
     },
     label: {
       text: arr.icao,
@@ -433,7 +478,6 @@ function buildRouteViz(icao24, route) {
       outlineWidth: 2,
       style: Cesium.LabelStyle.FILL_AND_OUTLINE,
       pixelOffset: new Cesium.Cartesian2(0, -18),
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
       show: false,
     },
   });
@@ -622,6 +666,7 @@ function toggleMilitary() {
 
 function startMilitaryTracking() {
   if (!cesiumViewer) return;
+  setupClickHandler();
   if (!milBillboards) {
     milBillboards = cesiumViewer.scene.primitives.add(
       new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
@@ -689,7 +734,7 @@ function applyMilStates(aircraft) {
         scale:    0.65,
         rotation: -Cesium.Math.toRadians(heading),
         color:    Cesium.Color.fromCssColorString('#ff2244'),
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        heightReference: Cesium.HeightReference.NONE,
       });
       milFlightMap.set(hex, {
         bb,
@@ -717,7 +762,8 @@ function setWeatherLayer2d(layer) {
   if (weatherLayer2d) { map2d.removeLayer(weatherLayer2d); weatherLayer2d = null; }
   if (!layer || !map2d) return;
   weatherLayer2d = L.tileLayer('/api/weather/tile/' + layer + '/{z}/{x}/{y}', {
-    maxZoom: 19, opacity: 0.6, attribution: 'Weather &copy; OpenWeatherMap',
+    maxZoom: 19, opacity: 0.85, attribution: 'Weather &copy; OpenWeatherMap',
+    className: 'weather-tile',
   }).addTo(map2d);
 }
 
@@ -739,7 +785,7 @@ function setWeatherLayer3d(layer) {
     id: weatherLayerId3d,
     type: 'raster',
     source: 'weather-tiles',
-    paint: { 'raster-opacity': 0.5 },
+    paint: { 'raster-opacity': 0.85, 'raster-saturation': 0.8, 'raster-contrast': 0.4 },
   });
 }
 
@@ -756,18 +802,23 @@ function setWeatherLayerGlobe(layer) {
       maximumLevel: 6,
     })
   );
-  weatherLayerGlobe.alpha = 0.55;
+  weatherLayerGlobe.alpha = 0.85;
+  weatherLayerGlobe.saturation = 3.0;
+  weatherLayerGlobe.contrast = 1.8;
+  weatherLayerGlobe.brightness = 1.3;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // WEBCAM / CAMERA FEEDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getCamCanvas() {
+let camCanvas = null;
+function getCamIcon() {
+  if (camCanvas) return camCanvas;
   const N = 20;
-  const c = document.createElement('canvas');
-  c.width = c.height = N;
-  const ctx = c.getContext('2d');
+  camCanvas = document.createElement('canvas');
+  camCanvas.width = camCanvas.height = N;
+  const ctx = camCanvas.getContext('2d');
   ctx.fillStyle = '#00ccff';
   ctx.shadowColor = 'rgba(0,200,255,0.7)';
   ctx.shadowBlur = 4;
@@ -778,44 +829,70 @@ function getCamCanvas() {
   ctx.beginPath();
   ctx.arc(N / 2, N / 2, 2.5, 0, Math.PI * 2);
   ctx.fill();
-  return c;
-}
-
-let camCanvas = null;
-function getCamIcon() {
-  if (!camCanvas) camCanvas = getCamCanvas();
   return camCanvas;
 }
+
+let camDebounceTimer = null;
+let lastCamKey = '';
 
 function toggleCameras() {
   camEnabled = document.getElementById('camToggle').checked;
   if (camEnabled) {
+    setupClickHandler();
+    if (!camBillboards) {
+      camBillboards = cesiumViewer.scene.primitives.add(
+        new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
+      );
+    }
     loadNearbyWebcams();
-    cesiumViewer.camera.moveEnd.addEventListener(loadNearbyWebcams);
+    cesiumViewer.camera.moveEnd.addEventListener(debouncedCamLoad);
   } else {
-    cesiumViewer.camera.moveEnd.removeEventListener(loadNearbyWebcams);
-    clearCamEntities();
+    cesiumViewer.camera.moveEnd.removeEventListener(debouncedCamLoad);
+    if (camDebounceTimer) { clearTimeout(camDebounceTimer); camDebounceTimer = null; }
+    clearCams();
+    lastCamKey = '';
     document.getElementById('cam-count').textContent = '—';
   }
 }
 
-function clearCamEntities() {
-  camEntities.forEach(e => cesiumViewer.entities.remove(e));
-  camEntities = [];
+function debouncedCamLoad() {
+  if (camDebounceTimer) clearTimeout(camDebounceTimer);
+  camDebounceTimer = setTimeout(loadNearbyWebcams, 800);
+}
+
+function clearCams() {
+  if (camBillboards) camBillboards.removeAll();
+  camMap.clear();
+}
+
+function getCameraTarget() {
+  const ray = cesiumViewer.camera.getPickRay(new Cesium.Cartesian2(
+    cesiumViewer.canvas.clientWidth / 2,
+    cesiumViewer.canvas.clientHeight / 2,
+  ));
+  if (!ray) return null;
+  const hit = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene);
+  if (!hit) return null;
+  const carto = Cesium.Cartographic.fromCartesian(hit);
+  return {
+    lat: Cesium.Math.toDegrees(carto.latitude),
+    lon: Cesium.Math.toDegrees(carto.longitude),
+  };
 }
 
 async function loadNearbyWebcams() {
   if (!cesiumViewer || !camEnabled || camFetchPending) return;
 
-  const cam = cesiumViewer.camera;
-  const cart = cam.positionCartographic;
-  if (!cart) return;
-  const lat = Cesium.Math.toDegrees(cart.latitude);
-  const lon = Cesium.Math.toDegrees(cart.longitude);
-  const altKm = cart.height / 1000;
-  const radius = Math.min(250, Math.max(10, Math.round(altKm / 20)));
+  const target = getCameraTarget();
+  if (!target) return;
+  const { lat, lon } = target;
+  const altKm = cesiumViewer.camera.positionCartographic.height / 1000;
+  const radius = Math.min(250, Math.max(10, Math.round(altKm / 15)));
 
-  const key = `${lat.toFixed(1)},${lon.toFixed(1)},${radius}`;
+  const key = `${lat.toFixed(0)},${lon.toFixed(0)},${radius}`;
+  if (key === lastCamKey) return;
+  lastCamKey = key;
+
   if (camDataCache.has(key)) {
     renderCams(camDataCache.get(key));
     return;
@@ -837,51 +914,55 @@ async function loadNearbyWebcams() {
 }
 
 function renderCams(webcams) {
-  clearCamEntities();
+  clearCams();
+  const max = 30;
+  let count = 0;
   for (const wc of webcams) {
+    if (count >= max) break;
     const loc = wc.location;
     if (!loc) continue;
-    const ent = cesiumViewer.entities.add({
+    const camId = String(wc.webcamId || wc.id);
+    const bb = camBillboards.add({
+      id: 'cam_' + camId,
       position: Cesium.Cartesian3.fromDegrees(loc.longitude, loc.latitude, 200),
-      billboard: {
-        image: getCamIcon(),
-        scale: 1.0,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
-      properties: {
-        camId: wc.webcamId || wc.id,
+      image: getCamIcon(),
+      scale: 1.0,
+      heightReference: Cesium.HeightReference.NONE,
+    });
+    camMap.set(camId, {
+      bb,
+      data: {
+        camId,
         title: wc.title || 'Webcam',
-        city: wc.location?.city || '',
+        city: loc.city || '',
         thumbnail: wc.images?.current?.preview || wc.images?.current?.thumbnail || '',
         player: wc.player?.day || wc.player?.lifetime || '',
       },
     });
-    camEntities.push(ent);
+    count++;
   }
-  document.getElementById('cam-count').textContent = camEntities.length + ' cameras';
+  document.getElementById('cam-count').textContent = camMap.size + ' cameras';
 }
 
-function openCam(entity) {
-  const props = entity.properties;
-  const title = props.title?.getValue() || 'Webcam';
-  const city  = props.city?.getValue() || '';
-  const thumb = props.thumbnail?.getValue() || '';
-  const player = props.player?.getValue() || '';
+function openCam(bbId) {
+  const camId = bbId.replace('cam_', '');
+  const entry = camMap.get(camId);
+  if (!entry) return;
+  const { title, city, thumbnail, player } = entry.data;
 
   document.getElementById('cam-title').textContent = city ? title + ' — ' + city : title;
   const body = document.getElementById('cam-body');
+  body.innerHTML = '';
 
   if (player) {
-    body.innerHTML = '';
     const iframe = document.createElement('iframe');
     iframe.src = player;
     iframe.allow = 'autoplay; fullscreen';
     iframe.setAttribute('allowfullscreen', '');
     body.appendChild(iframe);
-  } else if (thumb) {
-    body.innerHTML = '';
+  } else if (thumbnail) {
     const img = document.createElement('img');
-    img.src = thumb;
+    img.src = thumbnail;
     img.alt = title;
     body.appendChild(img);
   } else {
@@ -937,6 +1018,7 @@ function goTo(lat, lng, zoom) {
   }
 }
 
+window.toggleFlights        = toggleFlights;
 window.showTab              = showTab;
 window.goTo                 = goTo;
 window.setPitch             = setPitch;

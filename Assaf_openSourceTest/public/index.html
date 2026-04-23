@@ -146,6 +146,13 @@
       <!-- Controls -->
       <aside id="controlsGlobe">
         <div class="ctrl-toggle">
+          <span>Flights</span>
+          <label class="toggle">
+            <input type="checkbox" id="flightToggle" onchange="toggleFlights()"/>
+            <span class="knob"></span>
+          </label>
+        </div>
+        <div class="ctrl-toggle">
           <span>Auto-rotate</span>
           <label class="toggle">
             <input type="checkbox" id="rotateToggle" checked onchange="toggleRotate()"/>
@@ -177,7 +184,7 @@
             <span class="knob"></span>
           </label>
         </div>
-        <div id="flight-count" class="flight-count">Loading flights…</div>
+        <div id="flight-count" class="flight-count">Flights off</div>
         <div id="mil-count" class="flight-count mil">—</div>
         <div id="cam-count" class="flight-count cam">—</div>
       </aside>

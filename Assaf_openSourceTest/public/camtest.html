@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Camera Feed Test</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0c0e18; color: #dde1f5; padding: 1.5rem; }
+    h1 { font-size: 1.2rem; margin-bottom: 1rem; }
+    .controls { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    input, select, button {
+      background: #1e2240; border: 1px solid #2e3360; color: #b0b8e0;
+      padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.85rem;
+    }
+    input { flex: 1; min-width: 200px; }
+    button { cursor: pointer; background: #3a3fa8; border-color: #5560cc; color: #fff; }
+    button:hover { background: #4a4fc8; }
+    #status { font-size: 0.8rem; color: #7880a8; margin-bottom: 1rem; }
+    .cam-list { display: flex; flex-direction: column; gap: 0.5rem; max-height: 300px; overflow-y: auto; margin-bottom: 1rem; }
+    .cam-item {
+      background: #13162a; border: 1px solid #2e3360; border-radius: 8px;
+      padding: 0.6rem 0.8rem; cursor: pointer; display: flex; align-items: center; gap: 0.75rem;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .cam-item:hover { background: #1e2240; border-color: #7080ff; }
+    .cam-item.active { background: #1e2240; border-color: #00ccff; }
+    .cam-item img { width: 80px; height: 45px; object-fit: cover; border-radius: 4px; background: #0a0c16; }
+    .cam-item .info { font-size: 0.8rem; }
+    .cam-item .info b { color: #00ccff; display: block; margin-bottom: 0.15rem; }
+    .cam-item .info small { color: #505878; }
+    #viewer {
+      background: #0a0c16; border: 1px solid #2e3360; border-radius: 10px;
+      overflow: hidden; width: 100%; max-width: 640px; aspect-ratio: 16/9;
+      display: flex; align-items: center; justify-content: center;
+      color: #505878; font-size: 0.85rem;
+    }
+    #viewer iframe, #viewer img { width: 100%; height: 100%; border: none; object-fit: cover; }
+  </style>
+</head>
+<body>
+  <h1>Camera Feed Test</h1>
+  <div class="controls">
+    <input id="city" type="text" placeholder="City name (e.g. London, Tokyo, Dubai)..." value="New York"/>
+    <button onclick="searchCity()">Search</button>
+  </div>
+  <div id="status">Enter a city and click Search</div>
+  <div class="cam-list" id="cam-list"></div>
+  <div id="viewer">Select a camera above</div>
+
+  <script>
+    const CITIES = {
+      'new york':  { lat: 40.7128, lon: -74.006 },
+      'london':    { lat: 51.505,  lon: -0.09 },
+      'tokyo':     { lat: 35.6762, lon: 139.6503 },
+      'dubai':     { lat: 25.2048, lon: 55.2708 },
+      'riyadh':    { lat: 24.7136, lon: 46.6753 },
+      'paris':     { lat: 48.8566, lon: 2.3522 },
+      'sydney':    { lat: -33.8688, lon: 151.2093 },
+      'los angeles': { lat: 34.0522, lon: -118.2437 },
+      'rome':      { lat: 41.9028, lon: 12.4964 },
+      'istanbul':  { lat: 41.0082, lon: 28.9784 },
+    };
+
+    async function searchCity() {
+      const input = document.getElementById('city').value.trim();
+      if (!input) return;
+
+      const key = input.toLowerCase();
+      let lat, lon;
+
+      if (CITIES[key]) {
+        lat = CITIES[key].lat;
+        lon = CITIES[key].lon;
+      } else {
+        // fallback: try geocoding via nominatim
+        document.getElementById('status').textContent = 'Looking up "' + input + '"...';
+        try {
+          const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(input));
+          const results = await g.json();
+          if (!results.length) { document.getElementById('status').textContent = 'City not found'; return; }
+          lat = parseFloat(results[0].lat);
+          lon = parseFloat(results[0].lon);
+        } catch (e) { document.getElementById('status').textContent = 'Geocode error: ' + e.message; return; }
+      }
+
+      document.getElementById('status').textContent = 'Fetching cameras near ' + input + '...';
+      document.getElementById('cam-list').innerHTML = '';
+      document.getElementById('viewer').textContent = 'Loading...';
+
+      try {
+        const r = await fetch('/api/webcams?lat=' + lat + '&lon=' + lon + '&radius=50');
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          document.getElementById('status').textContent = 'API error: ' + (err.error || r.status);
+          return;
+        }
+        const data = await r.json();
+        const cams = data.webcams || [];
+        document.getElementById('status').textContent = cams.length + ' cameras found near ' + input;
+
+        if (!cams.length) {
+          document.getElementById('viewer').textContent = 'No cameras found';
+          return;
+        }
+
+        const list = document.getElementById('cam-list');
+        cams.forEach((wc, i) => {
+          const thumb = wc.images?.current?.thumbnail || '';
+          const title = wc.title || 'Webcam';
+          const city = wc.location?.city || '';
+          const player = wc.player?.day || wc.player?.lifetime || '';
+
+          const div = document.createElement('div');
+          div.className = 'cam-item';
+          div.innerHTML =
+            (thumb ? '<img src="' + thumb + '" alt=""/>' : '') +
+            '<div class="info"><b>' + title + '</b><small>' + city + '</small></div>';
+          div.onclick = () => {
+            document.querySelectorAll('.cam-item').forEach(el => el.classList.remove('active'));
+            div.classList.add('active');
+            showFeed(title, city, player, thumb);
+          };
+          list.appendChild(div);
+
+          // auto-open first one
+          if (i === 0) div.click();
+        });
+      } catch (e) {
+        document.getElementById('status').textContent = 'Fetch error: ' + e.message;
+      }
+    }
+
+    function showFeed(title, city, playerUrl, thumbUrl) {
+      const viewer = document.getElementById('viewer');
+      viewer.innerHTML = '';
+
+      if (playerUrl) {
+        const iframe = document.createElement('iframe');
+        iframe.src = playerUrl;
+        iframe.allow = 'autoplay; fullscreen';
+        iframe.setAttribute('allowfullscreen', '');
+        viewer.appendChild(iframe);
+      } else if (thumbUrl) {
+        const img = document.createElement('img');
+        img.src = thumbUrl.replace('/thumbnail/', '/preview/');
+        img.alt = title;
+        viewer.appendChild(img);
+      } else {
+        viewer.textContent = 'No feed available for ' + title;
+      }
+    }
+
+    // search on Enter
+    document.getElementById('city').addEventListener('keydown', e => {
+      if (e.key === 'Enter') searchCity();
+    });
+  </script>
+</body>
+</html>
