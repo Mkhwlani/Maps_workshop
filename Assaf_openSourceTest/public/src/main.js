@@ -851,8 +851,9 @@ function renderCams(webcams) {
       properties: {
         camId: wc.webcamId || wc.id,
         title: wc.title || 'Webcam',
+        city: wc.location?.city || '',
         thumbnail: wc.images?.current?.preview || wc.images?.current?.thumbnail || '',
-        player: wc.player?.day?.embed || wc.player?.lifetime?.embed || '',
+        player: wc.player?.day || wc.player?.lifetime || '',
       },
     });
     camEntities.push(ent);
@@ -863,18 +864,28 @@ function renderCams(webcams) {
 function openCam(entity) {
   const props = entity.properties;
   const title = props.title?.getValue() || 'Webcam';
+  const city  = props.city?.getValue() || '';
   const thumb = props.thumbnail?.getValue() || '';
   const player = props.player?.getValue() || '';
 
-  document.getElementById('cam-title').textContent = title;
+  document.getElementById('cam-title').textContent = city ? title + ' — ' + city : title;
   const body = document.getElementById('cam-body');
 
   if (player) {
-    body.innerHTML = `<iframe src="${player}" allowfullscreen></iframe>`;
+    body.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.src = player;
+    iframe.allow = 'autoplay; fullscreen';
+    iframe.setAttribute('allowfullscreen', '');
+    body.appendChild(iframe);
   } else if (thumb) {
-    body.innerHTML = `<img src="${thumb}" alt="${title}"/>`;
+    body.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = thumb;
+    img.alt = title;
+    body.appendChild(img);
   } else {
-    body.innerHTML = '<span>No feed available</span>';
+    body.textContent = 'No feed available';
   }
 
   document.getElementById('flight-info').classList.add('hidden');

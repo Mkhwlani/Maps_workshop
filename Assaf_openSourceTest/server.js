@@ -143,7 +143,7 @@ app.get('/api/webcams', async (req, res) => {
   if (hit && Date.now() - hit.ts < WEBCAM_TTL) { res.json(hit.data); return; }
 
   try {
-    const url = `https://api.windy.com/webcams/api/v3/webcams?lang=en&limit=50&offset=0&nearby=${lat},${lon},${radius}`;
+    const url = `https://api.windy.com/webcams/api/v3/webcams?lang=en&limit=50&offset=0&nearby=${lat},${lon},${radius}&include=location,images,player`;
     const r = await fetch(url, {
       headers: { 'x-windy-api-key': WINDY_API_KEY },
     });
