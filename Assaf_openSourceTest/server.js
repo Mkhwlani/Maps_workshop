@@ -1,6 +1,9 @@
+require("dotenv").config();
+
 const express = require('express');
 const compression = require('compression');
 const app = express();
+
 app.use(compression());
 
 const ADSBX_API_KEY = process.env.ADSBX_API_KEY || '';
@@ -69,7 +72,7 @@ app.use(express.static('public', { maxAge: '1h' }));
 app.use('/node_modules', express.static('node_modules', { maxAge: '7d', immutable: true }));
 
 let flightCache = { data: null, ts: 0 };
-const FLIGHT_TTL = 30_000;
+const FLIGHT_TTL = 300_000; // 5 min — OpenSky anonymous limit is ~400 req/day
 
 app.get('/api/flights', async (req, res) => {
   if (flightCache.data && Date.now() - flightCache.ts < FLIGHT_TTL) {
@@ -78,6 +81,11 @@ app.get('/api/flights', async (req, res) => {
   }
   try {
     const r = await fetch('https://opensky-network.org/api/states/all');
+    if (r.status === 429) {
+      // rate limited — serve stale cache if available, otherwise propagate
+      if (flightCache.data) { res.json(flightCache.data); return; }
+      res.status(429).json({ error: 'Rate limited by OpenSky' }); return;
+    }
     if (!r.ok) { res.status(r.status).json({ error: 'OpenSky error' }); return; }
     const data = await r.json();
     flightCache = { data, ts: Date.now() };
