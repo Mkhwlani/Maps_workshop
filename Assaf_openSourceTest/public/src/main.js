@@ -245,6 +245,9 @@ let planeCanvas   = null;
 let flightInterval = null;
 let flightRouteInterval = null;
 let flightsEnabled = false;
+let routedOnlyEnabled = false;
+
+const PLANE_DEFAULT_SCALE = 0.55;
 
 // Military flight tracking
 let milBillboards = null;
@@ -295,34 +298,33 @@ function setupClickHandler() {
 
   handler.setInputAction((movement) => {
     const pickedObjects = cesiumViewer.scene.drillPick(movement.position);
-    if (!Cesium.defined(pickedObjects) || pickedObjects.length === 0) return;
+
+    if (!Cesium.defined(pickedObjects) || pickedObjects.length === 0) {
+      deselectFlight();
+      return;
+    }
 
     for (const picked of pickedObjects) {
       const pickId = picked.id;
       if (typeof pickId !== 'string') continue;
 
-      // --- CAMERA LOGIC ---
       if (pickId.startsWith('cam_')) {
-        openCam(pickId); 
-        return; 
-      }
-
-      // --- CIVIL FLIGHT LOGIC (Panel + Route) ---
-      if (pickId.startsWith('flight_')) {
-        const icao = pickId.replace('flight_', '');
-        // We call selectFlight because that function contains the code 
-        // to fetch the route and open the info panel.
-        selectFlight(icao); 
+        openCam(pickId);
         return;
       }
 
-      // --- MILITARY FLIGHT LOGIC ---
+      if (pickId.startsWith('flight_')) {
+        selectFlight(pickId.replace('flight_', ''));
+        return;
+      }
+
       if (pickId.startsWith('mil_')) {
-        // Handle military specifically (usually a new window or unique panel)
-        openMilFlightInNewWindow(pickId); 
+        openMilFlightInNewWindow(pickId);
         return;
       }
     }
+
+    deselectFlight();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 }
 
@@ -345,12 +347,12 @@ async function startFlightTracking() {
   }
   await refreshFlights();
   flightInterval = setInterval(refreshFlights, 30_000);
-  flightRouteInterval = setInterval(drainRouteQueue, 400);
+  // flightRouteInterval = setInterval(drainRouteQueue, 400); // this line auto-loads all flight intervals
 }
 
 function stopFlightTracking() {
   if (flightInterval) { clearInterval(flightInterval); flightInterval = null; }
-  if (flightRouteInterval) { clearInterval(flightRouteInterval); flightRouteInterval = null; }
+  // if (flightRouteInterval) { clearInterval(flightRouteInterval); flightRouteInterval = null; }
   deselectFlight();
   if (billboards) {
     for (const [, { bb }] of flightMap) billboards.remove(bb);
@@ -373,6 +375,21 @@ async function refreshFlights() {
   } catch (e) { console.warn('Flight fetch:', e.message); }
 }
 
+function toggleRoutedOnly() {
+  routedOnlyEnabled = document.getElementById('routedToggle').checked;
+  applyRoutedFilter();
+}
+
+function applyRoutedFilter() {
+  for (const [icao, { bb }] of flightMap) {
+    if (routedOnlyEnabled && !routeMap.has(icao)) {
+      bb.show = false;
+    } else {
+      bb.show = true;
+    }
+  }
+}
+
 function applyStates(states) {
   const seen = new Set();
 
@@ -386,14 +403,13 @@ function applyStates(states) {
     const cs_trim = (cs || '').trim() || icao24;
     seen.add(icao24);
 
-    // Where to draw the billboard — on the arc if route known, else real GPS
     let bbLon = lon, bbLat = lat;
     let progress = null;
     const re = routeMap.get(icao24);
     if (re) {
       progress = routeProgress(re.dep, re.arr, lon, lat);
       [bbLon, bbLat] = interpGC(re.dep.lon, re.dep.lat, re.arr.lon, re.arr.lat, progress);
-      re.progress = progress; // keep fresh for info panel
+      re.progress = progress;
     }
 
     if (flightMap.has(icao24)) {
@@ -407,7 +423,7 @@ function applyStates(states) {
         id:       'flight_' + icao24,
         position: Cesium.Cartesian3.fromDegrees(bbLon, bbLat, alt),
         image:    getPlaneCanvas(),
-        scale:    0.55,
+        scale:    PLANE_DEFAULT_SCALE,
         rotation: -Cesium.Math.toRadians(heading),
         color:    altColor(alt),
         heightReference: Cesium.HeightReference.NONE,
@@ -416,11 +432,9 @@ function applyStates(states) {
         bb,
         d: { icao24, cs: cs_trim, country, lon, lat, alt, heading, speed, vr },
       });
-      // enqueueRoute(icao24, cs_trim); // this line causes the webapp to start spamming camera feeds and flight paths.
     }
   }
 
-  // Remove planes no longer in feed
   for (const [icao, { bb }] of flightMap) {
     if (!seen.has(icao)) {
       billboards.remove(bb);
@@ -429,28 +443,12 @@ function applyStates(states) {
     }
   }
 
+  if (routedOnlyEnabled) applyRoutedFilter();
+
   document.getElementById('flight-count').textContent =
     flightMap.size.toLocaleString() + ' flights live';
 }
 
-// ── Route fetch queue ─────────────────────────────────────────────────────────
-function enqueueRoute(icao24, cs) {
-  if (!cs || routeFetched.has(cs)) return;
-  routeFetched.add(cs);
-  routeQueue.push({ icao24, cs });
-}
-
-async function drainRouteQueue() {
-  const item = routeQueue.shift();
-  if (!item) return;
-  const { icao24, cs } = item;
-  try {
-    const r = await fetch(`/api/route/${encodeURIComponent(cs)}`);
-    if (r.ok && flightMap.has(icao24)) {
-      buildRouteViz(icao24, await r.json());
-    }
-  } catch { /* no route data — plane stays as billboard only */ }
-}
 
 // ── Route visualisation ───────────────────────────────────────────────────────
 function buildRouteViz(icao24, route) {
@@ -524,55 +522,71 @@ function selectFlight(icao24) {
   deselectFlight();
   const entry = flightMap.get(icao24);
   if (!entry) return;
+
   selectedIcao = icao24;
   stopRotation();
 
   entry.bb.color = Cesium.Color.ORANGE;
   entry.bb.scale = 1.1;
 
-  const cs = entry.d.cs;
+  const cs = (entry.d.cs || '').trim();
 
   if (cs) {
     fetch(`/api/route/${encodeURIComponent(cs)}`)
-      .then((r) => r.ok && r.json())
-      .then((route) => {
-        if (route) {
-          buildRouteViz(icao24, route); // only now draw route
-          renderInfoPanel(entry.d, routeMap.get(icao24) || null);
-        } else {
-          drawProjectedPath(entry.d);
-          renderInfoPanel(entry.d, null);
-        }
+      .then(r => {
+        if (!r.ok) throw new Error('Route not found');
+        return r.json();
       })
-      .catch((e) => {
-        console.log('No route for', cs, e);
-        drawProjectedPath(entry.d);
+      .then(route => {
+        if (selectedIcao !== icao24) return;
+        if (!route?.dep?.lat || !route?.arr?.lat) {
+          renderInfoPanel(entry.d, null);
+          return;
+        }
+        buildRouteViz(icao24, route);
+        renderInfoPanel(entry.d, routeMap.get(icao24) || null);
+      })
+      .catch(() => {
+        if (selectedIcao !== icao24) return;
         renderInfoPanel(entry.d, null);
       });
   } else {
-    drawProjectedPath(entry.d);
     renderInfoPanel(entry.d, null);
   }
 }
 
 function deselectFlight() {
-  const re = routeMap.get(selectedIcao);
-  if (re) {
-    re.depEnt.label.show = false;
-    re.arrEnt.label.show = false;
-    re.depEnt.point.pixelSize = 8;
-    re.arrEnt.point.pixelSize = 8;
-    re.arc.material = Cesium.Material.fromType('PolylineGlow', {
-      glowPower: 0.15,
-      color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
-    });
+  if (!cesiumViewer) return;
+
+  if (selectedIcao) {
+    const entry = flightMap.get(selectedIcao);
+    if (entry) {
+      entry.bb.scale = PLANE_DEFAULT_SCALE;
+      entry.bb.color = altColor(entry.d.alt);
+    }
+
+    const re = routeMap.get(selectedIcao);
+    if (re) {
+      if (re.depEnt?.label) re.depEnt.label.show = false;
+      if (re.arrEnt?.label) re.arrEnt.label.show = false;
+      if (re.depEnt?.point) re.depEnt.point.pixelSize = 8;
+      if (re.arrEnt?.point) re.arrEnt.point.pixelSize = 8;
+      if (re.arc) {
+        re.arc.material = Cesium.Material.fromType('PolylineGlow', {
+          glowPower: 0.15,
+          color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
+        });
+      }
+    }
+
+    removeRouteViz(selectedIcao);
   }
 
   pathEntities.forEach(e => cesiumViewer.entities.remove(e));
   pathEntities = [];
 
   selectedIcao = null;
-  document.getElementById('flight-info').classList.add('hidden');
+  document.getElementById('flight-info')?.classList.add('hidden');
 }
 
 // Fallback: heading projection for flights without route data
@@ -591,6 +605,8 @@ function gcPoints(lon, lat, alt, heading, distKm, steps) {
 }
 
 function drawProjectedPath({ lon, lat, alt, heading }) {
+  if (lon == null || lat == null || Math.abs(lat) > 85) return;
+
   pathEntities.forEach(e => cesiumViewer.entities.remove(e));
   pathEntities = [];
 
@@ -608,36 +624,52 @@ function drawProjectedPath({ lon, lat, alt, heading }) {
 }
 
 // ── Info panel ────────────────────────────────────────────────────────────────
-function renderInfoPanel({ icao24, cs, country, alt, speed, heading, vr }, routeEntry) {
-  document.getElementById('fi-cs').textContent      = cs || icao24;
-  document.getElementById('fi-country').textContent = country  || '—';
-  document.getElementById('fi-alt').textContent     = alt   ? Math.round(alt).toLocaleString() + ' m'  : '—';
-  document.getElementById('fi-spd').textContent     = speed ? Math.round(speed * 3.6) + ' km/h'        : '—';
-  document.getElementById('fi-hdg').textContent     = heading != null ? heading.toFixed(0) + '°'        : '—';
-  document.getElementById('fi-vr').textContent      = vr    ? (vr > 0 ? '+' : '') + vr.toFixed(1) + ' m/s' : '—';
-  document.getElementById('fi-icao').textContent    = icao24;
+function renderInfoPanel(data, routeEntry) {
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val ?? '—';
+  };
+
+  const infoBox = document.getElementById('flight-info');
+  if (!infoBox) return;
+
+  setTxt('fi-cs',      data.cs || data.icao24);
+  setTxt('fi-country', data.country);
+  setTxt('fi-alt',     data.alt ? Math.round(data.alt).toLocaleString() + ' m' : '—');
+  setTxt('fi-spd',     data.speed ? Math.round(data.speed * 3.6) + ' km/h' : '—');
+  setTxt('fi-hdg',     data.heading != null ? data.heading.toFixed(0) + '°' : '—');
+  setTxt('fi-vr',      data.vr ? (data.vr > 0 ? '+' : '') + data.vr.toFixed(1) + ' m/s' : '—');
+  setTxt('fi-icao',    data.icao24 || data.hex);
 
   const routeSection = document.getElementById('fi-route');
   const legend       = document.getElementById('fi-legend');
+  const noRoute      = document.getElementById('fi-no-route');
 
-  if (routeEntry) {
+  if (routeEntry?.dep && routeEntry?.arr) {
     const { dep, arr, progress } = routeEntry;
-    const pct = Math.round(progress * 100);
-    document.getElementById('fi-dep-icao').textContent  = dep.icao;
-    document.getElementById('fi-dep-name').textContent  = dep.name;
-    document.getElementById('fi-arr-icao').textContent  = arr.icao;
-    document.getElementById('fi-arr-name').textContent  = arr.name;
-    document.getElementById('fi-prog-fill').style.width = pct + '%';
-    document.getElementById('fi-prog-plane').style.left = pct + '%';
-    document.getElementById('fi-prog-pct').textContent  = pct + '%';
-    routeSection.classList.remove('hidden');
-    legend.classList.add('hidden');
+    const pct = Math.round((progress || 0) * 100);
+
+    setTxt('fi-dep-icao', dep.icao);
+    setTxt('fi-dep-name', dep.name);
+    setTxt('fi-arr-icao', arr.icao);
+    setTxt('fi-arr-name', arr.name);
+    setTxt('fi-prog-pct', pct + '%');
+
+    const fill  = document.getElementById('fi-prog-fill');
+    const plane = document.getElementById('fi-prog-plane');
+    if (fill)  fill.style.width = pct + '%';
+    if (plane) plane.style.left = pct + '%';
+
+    routeSection?.classList.remove('hidden');
+    legend?.classList.add('hidden');
+    noRoute?.classList.add('hidden');
   } else {
-    routeSection.classList.add('hidden');
-    legend.classList.remove('hidden');
+    routeSection?.classList.add('hidden');
+    legend?.classList.add('hidden');
+    noRoute?.classList.remove('hidden');
   }
 
-  document.getElementById('flight-info').classList.remove('hidden');
+  infoBox.classList.remove('hidden');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1046,16 +1078,21 @@ function selectMilFlight(bbId) {
 }
 
 function renderMilInfoPanel({ hex, cs, alt, speed, heading, type, squawk }) {
-  document.getElementById('fi-cs').textContent      = cs || hex;
-  document.getElementById('fi-country').textContent  = type ? 'MIL · ' + type : 'MILITARY';
-  document.getElementById('fi-alt').textContent      = alt ? Math.round(alt).toLocaleString() + ' m' : '—';
-  document.getElementById('fi-spd').textContent      = speed ? Math.round(speed * 1.852) + ' km/h' : '—';
-  document.getElementById('fi-hdg').textContent      = heading != null ? heading.toFixed(0) + '°' : '—';
-  document.getElementById('fi-vr').textContent       = squawk || '—';
-  document.getElementById('fi-icao').textContent     = hex;
-  document.getElementById('fi-route').classList.add('hidden');
-  document.getElementById('fi-legend').classList.add('hidden');
-  document.getElementById('flight-info').classList.remove('hidden');
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val ?? '—';
+  };
+  setTxt('fi-cs',      cs || hex);
+  setTxt('fi-country', type ? 'MIL · ' + type : 'MILITARY');
+  setTxt('fi-alt',     alt ? Math.round(alt).toLocaleString() + ' m' : '—');
+  setTxt('fi-spd',     speed ? Math.round(speed * 1.852) + ' km/h' : '—');
+  setTxt('fi-hdg',     heading != null ? heading.toFixed(0) + '°' : '—');
+  setTxt('fi-vr',      squawk || '—');
+  setTxt('fi-icao',    hex);
+  document.getElementById('fi-route')?.classList.add('hidden');
+  document.getElementById('fi-legend')?.classList.add('hidden');
+  document.getElementById('fi-no-route')?.classList.add('hidden');
+  document.getElementById('flight-info')?.classList.remove('hidden');
 }
 
 function buildFlightInfoHTML(d, isMil) {
@@ -1162,6 +1199,7 @@ window.toggleBuildings      = toggleBuildings;
 window.toggleRotate         = toggleRotate;
 window.toggleMilitary       = toggleMilitary;
 window.toggleCameras        = toggleCameras;
+window.toggleRoutedOnly     = toggleRoutedOnly;
 window.closeFlight          = deselectFlight;
 window.closeCam             = closeCam;
 window.setWeatherLayer2d    = setWeatherLayer2d;
