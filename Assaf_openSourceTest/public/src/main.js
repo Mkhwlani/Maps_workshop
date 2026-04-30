@@ -5,6 +5,8 @@ const CESIUM_BASE = '/node_modules/cesium/Build/Cesium/';
 const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
 
+const CAM_MAX_HEIGHT_M = 300_000; // ~300 km — above this, cameras are completely disabled
+
 let nav = { lat: 24.7136, lng: 46.6753, zoom: 15 };
 let map2d, map3d, cesiumViewer;
 let rotateRemover = null;
@@ -161,8 +163,8 @@ async function initCesium() {
   cesiumViewer.scene.skyAtmosphere.show   = true;
 
   cesiumViewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(20, 10, 18_000_000),
-    orientation: { heading: 0, pitch: -Cesium.Math.toRadians(25), roll: 0 },
+    destination: Cesium.Cartesian3.fromDegrees(46.67, 20, 18_000_000),
+    orientation: { heading: 0, pitch: -Cesium.Math.toRadians(90), roll: 0 },
     duration: 3,
     complete: () => { startRotation(); },
   });
@@ -243,6 +245,9 @@ let planeCanvas   = null;
 let flightInterval = null;
 let flightRouteInterval = null;
 let flightsEnabled = false;
+let routedOnlyEnabled = false;
+
+const PLANE_DEFAULT_SCALE = 0.55;
 
 // Military flight tracking
 let milBillboards = null;
@@ -284,17 +289,42 @@ function altColor(alt) {
 
 // ── Click handler (set up once) ──────────────────────────────────────────────
 let clickHandlerReady = false;
+
 function setupClickHandler() {
-  if (clickHandlerReady) return;
+  if (clickHandlerReady) return; // This prevents the "multi-call" issue you noticed
   clickHandlerReady = true;
+
   const handler = new Cesium.ScreenSpaceEventHandler(cesiumViewer.scene.canvas);
-  handler.setInputAction((e) => {
-    const picked = cesiumViewer.scene.pick(e.position);
-    if (!Cesium.defined(picked)) { deselectFlight(); closeCam(); return; }
-    if (picked.primitive === billboards)    { closeCam(); selectFlight(picked.id); return; }
-    if (picked.primitive === milBillboards) { closeCam(); selectMilFlight(picked.id); return; }
-    if (picked.primitive === camBillboards && picked.id) { deselectFlight(); openCam(picked.id); return; }
-    deselectFlight(); closeCam();
+
+  handler.setInputAction((movement) => {
+    const pickedObjects = cesiumViewer.scene.drillPick(movement.position);
+
+    if (!Cesium.defined(pickedObjects) || pickedObjects.length === 0) {
+      deselectFlight();
+      return;
+    }
+
+    for (const picked of pickedObjects) {
+      const pickId = picked.id;
+      if (typeof pickId !== 'string') continue;
+
+      if (pickId.startsWith('cam_')) {
+        openCam(pickId);
+        return;
+      }
+
+      if (pickId.startsWith('flight_')) {
+        selectFlight(pickId.replace('flight_', ''));
+        return;
+      }
+
+      if (pickId.startsWith('mil_')) {
+        openMilFlightInNewWindow(pickId);
+        return;
+      }
+    }
+
+    deselectFlight();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 }
 
@@ -317,12 +347,12 @@ async function startFlightTracking() {
   }
   await refreshFlights();
   flightInterval = setInterval(refreshFlights, 30_000);
-  flightRouteInterval = setInterval(drainRouteQueue, 400);
+  // flightRouteInterval = setInterval(drainRouteQueue, 400); // this line auto-loads all flight intervals
 }
 
 function stopFlightTracking() {
   if (flightInterval) { clearInterval(flightInterval); flightInterval = null; }
-  if (flightRouteInterval) { clearInterval(flightRouteInterval); flightRouteInterval = null; }
+  // if (flightRouteInterval) { clearInterval(flightRouteInterval); flightRouteInterval = null; }
   deselectFlight();
   if (billboards) {
     for (const [, { bb }] of flightMap) billboards.remove(bb);
@@ -345,6 +375,21 @@ async function refreshFlights() {
   } catch (e) { console.warn('Flight fetch:', e.message); }
 }
 
+function toggleRoutedOnly() {
+  routedOnlyEnabled = document.getElementById('routedToggle').checked;
+  applyRoutedFilter();
+}
+
+function applyRoutedFilter() {
+  for (const [icao, { bb }] of flightMap) {
+    if (routedOnlyEnabled && !routeMap.has(icao)) {
+      bb.show = false;
+    } else {
+      bb.show = true;
+    }
+  }
+}
+
 function applyStates(states) {
   const seen = new Set();
 
@@ -358,14 +403,13 @@ function applyStates(states) {
     const cs_trim = (cs || '').trim() || icao24;
     seen.add(icao24);
 
-    // Where to draw the billboard — on the arc if route known, else real GPS
     let bbLon = lon, bbLat = lat;
     let progress = null;
     const re = routeMap.get(icao24);
     if (re) {
       progress = routeProgress(re.dep, re.arr, lon, lat);
       [bbLon, bbLat] = interpGC(re.dep.lon, re.dep.lat, re.arr.lon, re.arr.lat, progress);
-      re.progress = progress; // keep fresh for info panel
+      re.progress = progress;
     }
 
     if (flightMap.has(icao24)) {
@@ -376,10 +420,10 @@ function applyStates(states) {
       Object.assign(d, { lon, lat, alt, heading, speed, cs: cs_trim, country, vr });
     } else {
       const bb = billboards.add({
-        id:       icao24,
+        id:       'flight_' + icao24,
         position: Cesium.Cartesian3.fromDegrees(bbLon, bbLat, alt),
         image:    getPlaneCanvas(),
-        scale:    0.55,
+        scale:    PLANE_DEFAULT_SCALE,
         rotation: -Cesium.Math.toRadians(heading),
         color:    altColor(alt),
         heightReference: Cesium.HeightReference.NONE,
@@ -388,11 +432,9 @@ function applyStates(states) {
         bb,
         d: { icao24, cs: cs_trim, country, lon, lat, alt, heading, speed, vr },
       });
-      enqueueRoute(icao24, cs_trim);
     }
   }
 
-  // Remove planes no longer in feed
   for (const [icao, { bb }] of flightMap) {
     if (!seen.has(icao)) {
       billboards.remove(bb);
@@ -401,35 +443,18 @@ function applyStates(states) {
     }
   }
 
+  if (routedOnlyEnabled) applyRoutedFilter();
+
   document.getElementById('flight-count').textContent =
     flightMap.size.toLocaleString() + ' flights live';
 }
 
-// ── Route fetch queue ─────────────────────────────────────────────────────────
-function enqueueRoute(icao24, cs) {
-  if (!cs || routeFetched.has(cs)) return;
-  routeFetched.add(cs);
-  routeQueue.push({ icao24, cs });
-}
-
-async function drainRouteQueue() {
-  const item = routeQueue.shift();
-  if (!item) return;
-  const { icao24, cs } = item;
-  try {
-    const r = await fetch(`/api/route/${encodeURIComponent(cs)}`);
-    if (r.ok && flightMap.has(icao24)) {
-      buildRouteViz(icao24, await r.json());
-    }
-  } catch { /* no route data — plane stays as billboard only */ }
-}
 
 // ── Route visualisation ───────────────────────────────────────────────────────
 function buildRouteViz(icao24, route) {
-  if (routeMap.has(icao24)) return; // already built
+  if (routeMap.has(icao24)) return;
   const { dep, arr } = route;
 
-  // Arc — PolylineCollection primitive
   const arcPts = buildArcPositions(dep, arr);
   const arc = arcCollection.add({
     positions: Cesium.Cartesian3.fromDegreesArrayHeights(arcPts),
@@ -440,7 +465,6 @@ function buildRouteViz(icao24, route) {
     }),
   });
 
-  // Departure marker — green dot + hidden label
   const depEnt = cesiumViewer.entities.add({
     position: Cesium.Cartesian3.fromDegrees(dep.lon, dep.lat, 150),
     point: {
@@ -461,7 +485,6 @@ function buildRouteViz(icao24, route) {
     },
   });
 
-  // Arrival marker — red dot + hidden label
   const arrEnt = cesiumViewer.entities.add({
     position: Cesium.Cartesian3.fromDegrees(arr.lon, arr.lat, 150),
     point: {
@@ -483,15 +506,6 @@ function buildRouteViz(icao24, route) {
   });
 
   routeMap.set(icao24, { arc, depEnt, arrEnt, dep, arr, progress: 0 });
-
-  // Snap plane to arc immediately
-  const { bb, d } = flightMap.get(icao24) || {};
-  if (bb) {
-    const t = routeProgress(dep, arr, d.lon, d.lat);
-    const [ln, lt] = interpGC(dep.lon, dep.lat, arr.lon, arr.lat, t);
-    bb.position = Cesium.Cartesian3.fromDegrees(ln, lt, d.alt);
-    routeMap.get(icao24).progress = t;
-  }
 }
 
 function removeRouteViz(icao24) {
@@ -508,63 +522,71 @@ function selectFlight(icao24) {
   deselectFlight();
   const entry = flightMap.get(icao24);
   if (!entry) return;
+
   selectedIcao = icao24;
   stopRotation();
 
-  // Highlight billboard
   entry.bb.color = Cesium.Color.ORANGE;
   entry.bb.scale = 1.1;
 
-  const re = routeMap.get(icao24);
-  if (re) {
-    // Show airport labels and enlarge markers
-    re.depEnt.label.show = true;
-    re.arrEnt.label.show = true;
-    re.depEnt.point.pixelSize = 13;
-    re.arrEnt.point.pixelSize = 13;
-    // Brighten the arc
-    re.arc.material = Cesium.Material.fromType('PolylineGlow', {
-      glowPower: 0.35,
-      color: Cesium.Color.ORANGE.withAlpha(0.85),
-    });
-  } else {
-    // No route data — draw heading-projection trail
-    drawProjectedPath(entry.d);
-  }
+  const cs = (entry.d.cs || '').trim();
 
-  renderInfoPanel(entry.d, re || null);
+  if (cs) {
+    fetch(`/api/route/${encodeURIComponent(cs)}`)
+      .then(r => {
+        if (!r.ok) throw new Error('Route not found');
+        return r.json();
+      })
+      .then(route => {
+        if (selectedIcao !== icao24) return;
+        if (!route?.dep?.lat || !route?.arr?.lat) {
+          renderInfoPanel(entry.d, null);
+          return;
+        }
+        buildRouteViz(icao24, route);
+        renderInfoPanel(entry.d, routeMap.get(icao24) || null);
+      })
+      .catch(() => {
+        if (selectedIcao !== icao24) return;
+        renderInfoPanel(entry.d, null);
+      });
+  } else {
+    renderInfoPanel(entry.d, null);
+  }
 }
 
 function deselectFlight() {
-  if (selectedIcao) {
-    if (selectedIcao.startsWith('mil_')) {
-      const hex = selectedIcao.replace('mil_', '');
-      const me = milFlightMap.get(hex);
-      if (me) { me.bb.color = Cesium.Color.fromCssColorString('#ff2244'); me.bb.scale = 0.65; }
-    }
+  if (!cesiumViewer) return;
 
+  if (selectedIcao) {
     const entry = flightMap.get(selectedIcao);
-    if (entry) { entry.bb.color = altColor(entry.d.alt); entry.bb.scale = 0.55; }
+    if (entry) {
+      entry.bb.scale = PLANE_DEFAULT_SCALE;
+      entry.bb.color = altColor(entry.d.alt);
+    }
 
     const re = routeMap.get(selectedIcao);
     if (re) {
-      re.depEnt.label.show = false;
-      re.arrEnt.label.show = false;
-      re.depEnt.point.pixelSize = 8;
-      re.arrEnt.point.pixelSize = 8;
-      re.arc.material = Cesium.Material.fromType('PolylineGlow', {
-        glowPower: 0.15,
-        color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
-      });
+      if (re.depEnt?.label) re.depEnt.label.show = false;
+      if (re.arrEnt?.label) re.arrEnt.label.show = false;
+      if (re.depEnt?.point) re.depEnt.point.pixelSize = 8;
+      if (re.arrEnt?.point) re.arrEnt.point.pixelSize = 8;
+      if (re.arc) {
+        re.arc.material = Cesium.Material.fromType('PolylineGlow', {
+          glowPower: 0.15,
+          color: new Cesium.Color(0.25, 0.55, 1.0, 0.6),
+        });
+      }
     }
+
+    removeRouteViz(selectedIcao);
   }
 
-  // Remove fallback path
   pathEntities.forEach(e => cesiumViewer.entities.remove(e));
   pathEntities = [];
 
   selectedIcao = null;
-  document.getElementById('flight-info').classList.add('hidden');
+  document.getElementById('flight-info')?.classList.add('hidden');
 }
 
 // Fallback: heading projection for flights without route data
@@ -583,6 +605,8 @@ function gcPoints(lon, lat, alt, heading, distKm, steps) {
 }
 
 function drawProjectedPath({ lon, lat, alt, heading }) {
+  if (lon == null || lat == null || Math.abs(lat) > 85) return;
+
   pathEntities.forEach(e => cesiumViewer.entities.remove(e));
   pathEntities = [];
 
@@ -600,36 +624,52 @@ function drawProjectedPath({ lon, lat, alt, heading }) {
 }
 
 // ── Info panel ────────────────────────────────────────────────────────────────
-function renderInfoPanel({ icao24, cs, country, alt, speed, heading, vr }, routeEntry) {
-  document.getElementById('fi-cs').textContent      = cs || icao24;
-  document.getElementById('fi-country').textContent = country  || '—';
-  document.getElementById('fi-alt').textContent     = alt   ? Math.round(alt).toLocaleString() + ' m'  : '—';
-  document.getElementById('fi-spd').textContent     = speed ? Math.round(speed * 3.6) + ' km/h'        : '—';
-  document.getElementById('fi-hdg').textContent     = heading != null ? heading.toFixed(0) + '°'        : '—';
-  document.getElementById('fi-vr').textContent      = vr    ? (vr > 0 ? '+' : '') + vr.toFixed(1) + ' m/s' : '—';
-  document.getElementById('fi-icao').textContent    = icao24;
+function renderInfoPanel(data, routeEntry) {
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val ?? '—';
+  };
+
+  const infoBox = document.getElementById('flight-info');
+  if (!infoBox) return;
+
+  setTxt('fi-cs',      data.cs || data.icao24);
+  setTxt('fi-country', data.country);
+  setTxt('fi-alt',     data.alt ? Math.round(data.alt).toLocaleString() + ' m' : '—');
+  setTxt('fi-spd',     data.speed ? Math.round(data.speed * 3.6) + ' km/h' : '—');
+  setTxt('fi-hdg',     data.heading != null ? data.heading.toFixed(0) + '°' : '—');
+  setTxt('fi-vr',      data.vr ? (data.vr > 0 ? '+' : '') + data.vr.toFixed(1) + ' m/s' : '—');
+  setTxt('fi-icao',    data.icao24 || data.hex);
 
   const routeSection = document.getElementById('fi-route');
   const legend       = document.getElementById('fi-legend');
+  const noRoute      = document.getElementById('fi-no-route');
 
-  if (routeEntry) {
+  if (routeEntry?.dep && routeEntry?.arr) {
     const { dep, arr, progress } = routeEntry;
-    const pct = Math.round(progress * 100);
-    document.getElementById('fi-dep-icao').textContent  = dep.icao;
-    document.getElementById('fi-dep-name').textContent  = dep.name;
-    document.getElementById('fi-arr-icao').textContent  = arr.icao;
-    document.getElementById('fi-arr-name').textContent  = arr.name;
-    document.getElementById('fi-prog-fill').style.width = pct + '%';
-    document.getElementById('fi-prog-plane').style.left = pct + '%';
-    document.getElementById('fi-prog-pct').textContent  = pct + '%';
-    routeSection.classList.remove('hidden');
-    legend.classList.add('hidden');
+    const pct = Math.round((progress || 0) * 100);
+
+    setTxt('fi-dep-icao', dep.icao);
+    setTxt('fi-dep-name', dep.name);
+    setTxt('fi-arr-icao', arr.icao);
+    setTxt('fi-arr-name', arr.name);
+    setTxt('fi-prog-pct', pct + '%');
+
+    const fill  = document.getElementById('fi-prog-fill');
+    const plane = document.getElementById('fi-prog-plane');
+    if (fill)  fill.style.width = pct + '%';
+    if (plane) plane.style.left = pct + '%';
+
+    routeSection?.classList.remove('hidden');
+    legend?.classList.add('hidden');
+    noRoute?.classList.add('hidden');
   } else {
-    routeSection.classList.add('hidden');
-    legend.classList.remove('hidden');
+    routeSection?.classList.add('hidden');
+    legend?.classList.add('hidden');
+    noRoute?.classList.remove('hidden');
   }
 
-  document.getElementById('flight-info').classList.remove('hidden');
+  infoBox.classList.remove('hidden');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -812,24 +852,51 @@ function setWeatherLayerGlobe(layer) {
 // WEBCAM / CAMERA FEEDS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function isCameraZoomAllowed() {
+  if (!cesiumViewer) return false;
+  const h = cesiumViewer.camera.positionCartographic.height;
+  return h <= CAM_MAX_HEIGHT_M;
+}
+
 let camCanvas = null;
+let camCanvasHover = null;
+
 function getCamIcon() {
   if (camCanvas) return camCanvas;
-  const N = 20;
+  const N = 32;
   camCanvas = document.createElement('canvas');
   camCanvas.width = camCanvas.height = N;
   const ctx = camCanvas.getContext('2d');
   ctx.fillStyle = '#00ccff';
   ctx.shadowColor = 'rgba(0,200,255,0.7)';
-  ctx.shadowBlur = 4;
+  ctx.shadowBlur = 5;
   ctx.beginPath();
-  ctx.arc(N / 2, N / 2, 6, 0, Math.PI * 2);
+  ctx.arc(N / 2, N / 2, 10, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#fff';
   ctx.beginPath();
-  ctx.arc(N / 2, N / 2, 2.5, 0, Math.PI * 2);
+  ctx.arc(N / 2, N / 2, 4, 0, Math.PI * 2);
   ctx.fill();
   return camCanvas;
+}
+
+function getCamIconHover() {
+  if (camCanvasHover) return camCanvasHover;
+  const N = 32;
+  camCanvasHover = document.createElement('canvas');
+  camCanvasHover.width = camCanvasHover.height = N;
+  const ctx = camCanvasHover.getContext('2d');
+  ctx.fillStyle = '#ff2200';
+  ctx.shadowColor = 'rgba(255,0,0,0.8)';
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.arc(N / 2, N / 2, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(N / 2, N / 2, 4, 0, Math.PI * 2);
+  ctx.fill();
+  return camCanvasHover;
 }
 
 let camDebounceTimer = null;
@@ -844,7 +911,11 @@ function toggleCameras() {
         new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
       );
     }
-    loadNearbyWebcams();
+    if (isCameraZoomAllowed()) {
+      loadNearbyWebcams();
+    } else {
+      document.getElementById('cam-count').textContent = 'Zoom in for cameras';
+    }
     cesiumViewer.camera.moveEnd.addEventListener(debouncedCamLoad);
   } else {
     cesiumViewer.camera.moveEnd.removeEventListener(debouncedCamLoad);
@@ -856,6 +927,12 @@ function toggleCameras() {
 }
 
 function debouncedCamLoad() {
+  if (!isCameraZoomAllowed()) {
+    clearCams();
+    lastCamKey = '';
+    document.getElementById('cam-count').textContent = 'Zoom in for cameras';
+    return;
+  }
   if (camDebounceTimer) clearTimeout(camDebounceTimer);
   camDebounceTimer = setTimeout(loadNearbyWebcams, 800);
 }
@@ -883,30 +960,46 @@ function getCameraTarget() {
 async function loadNearbyWebcams() {
   if (!cesiumViewer || !camEnabled || camFetchPending) return;
 
+  const altM = cesiumViewer.camera.positionCartographic.height;
+  console.debug('[CAM] loadNearbyWebcams — altitude:', Math.round(altM), 'm, threshold:', CAM_MAX_HEIGHT_M, 'm');
+
+  if (!isCameraZoomAllowed()) {
+    console.debug('[CAM] too high, clearing cameras');
+    clearCams();
+    lastCamKey = '';
+    document.getElementById('cam-count').textContent = 'Zoom in for cameras';
+    return;
+  }
+
   const target = getCameraTarget();
-  if (!target) return;
+  if (!target) { console.debug('[CAM] no globe pick target — globe tiles may still be loading'); return; }
   const { lat, lon } = target;
-  const altKm = cesiumViewer.camera.positionCartographic.height / 1000;
+  const altKm = altM / 1000;
   const radius = Math.min(250, Math.max(10, Math.round(altKm / 15)));
 
-  const key = `${lat.toFixed(0)},${lon.toFixed(0)},${radius}`;
+  const key = `${lat.toFixed(1)},${lon.toFixed(1)},${radius}`;
+  console.debug('[CAM] key:', key, 'lastCamKey:', lastCamKey);
   if (key === lastCamKey) return;
   lastCamKey = key;
 
   if (camDataCache.has(key)) {
+    console.debug('[CAM] serving from cache, count:', camDataCache.get(key).length);
     renderCams(camDataCache.get(key));
     return;
   }
 
   camFetchPending = true;
   try {
+    console.debug('[CAM] fetching webcams — lat:', lat.toFixed(4), 'lon:', lon.toFixed(4), 'radius:', radius);
     const r = await fetch(`/api/webcams?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}&radius=${radius}`);
     if (!r.ok) {
       if (r.status === 503) document.getElementById('cam-count').textContent = 'No API key';
+      console.debug('[CAM] fetch failed, status:', r.status);
       return;
     }
     const data = await r.json();
     const webcams = data.webcams || [];
+    console.debug('[CAM] fetched', webcams.length, 'webcams');
     camDataCache.set(key, webcams);
     renderCams(webcams);
   } catch (e) { console.warn('Webcam fetch:', e.message); }
@@ -922,13 +1015,20 @@ function renderCams(webcams) {
     const loc = wc.location;
     if (!loc) continue;
     const camId = String(wc.webcamId || wc.id);
+
+    console.log("CAM LOC " + camId +" Coordinates: " + loc.longitude+ "  " + loc.latitude);
+
     const bb = camBillboards.add({
       id: 'cam_' + camId,
       position: Cesium.Cartesian3.fromDegrees(loc.longitude, loc.latitude, 200),
       image: getCamIcon(),
-      scale: 1.0,
+      scale: 1.4,
       heightReference: Cesium.HeightReference.NONE,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
     });
+
+
+    
     camMap.set(camId, {
       bb,
       data: {
@@ -945,37 +1045,24 @@ function renderCams(webcams) {
 }
 
 function openCam(bbId) {
+  console.debug('[CAM CLICK] bbId:', bbId);
   const camId = bbId.replace('cam_', '');
   const entry = camMap.get(camId);
+  console.debug('[CAM CLICK] entry found:', !!entry, 'camId:', camId);
   if (!entry) return;
   const { title, city, thumbnail, player } = entry.data;
 
-  document.getElementById('cam-title').textContent = city ? title + ' — ' + city : title;
-  const body = document.getElementById('cam-body');
-  body.innerHTML = '';
-
-  if (player) {
-    const iframe = document.createElement('iframe');
-    iframe.src = player;
-    iframe.allow = 'autoplay; fullscreen';
-    iframe.setAttribute('allowfullscreen', '');
-    body.appendChild(iframe);
-  } else if (thumbnail) {
-    const img = document.createElement('img');
-    img.src = thumbnail;
-    img.alt = title;
-    body.appendChild(img);
+  const url = player || thumbnail || '';
+  console.debug('[CAM CLICK] opening URL in new window:', url);
+  if (url) {
+    window.open(url, '_blank', 'noopener,noreferrer');
   } else {
-    body.textContent = 'No feed available';
+    console.debug('[CAM CLICK] no feed URL available for', camId);
   }
-
-  document.getElementById('flight-info').classList.add('hidden');
-  document.getElementById('cam-viewer').classList.remove('hidden');
 }
 
 function closeCam() {
-  document.getElementById('cam-viewer').classList.add('hidden');
-  document.getElementById('cam-body').innerHTML = '';
+  // no-op — cameras now open in new windows
 }
 
 function selectMilFlight(bbId) {
@@ -991,16 +1078,65 @@ function selectMilFlight(bbId) {
 }
 
 function renderMilInfoPanel({ hex, cs, alt, speed, heading, type, squawk }) {
-  document.getElementById('fi-cs').textContent      = cs || hex;
-  document.getElementById('fi-country').textContent  = type ? 'MIL · ' + type : 'MILITARY';
-  document.getElementById('fi-alt').textContent      = alt ? Math.round(alt).toLocaleString() + ' m' : '—';
-  document.getElementById('fi-spd').textContent      = speed ? Math.round(speed * 1.852) + ' km/h' : '—';
-  document.getElementById('fi-hdg').textContent      = heading != null ? heading.toFixed(0) + '°' : '—';
-  document.getElementById('fi-vr').textContent       = squawk || '—';
-  document.getElementById('fi-icao').textContent     = hex;
-  document.getElementById('fi-route').classList.add('hidden');
-  document.getElementById('fi-legend').classList.add('hidden');
-  document.getElementById('flight-info').classList.remove('hidden');
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val ?? '—';
+  };
+  setTxt('fi-cs',      cs || hex);
+  setTxt('fi-country', type ? 'MIL · ' + type : 'MILITARY');
+  setTxt('fi-alt',     alt ? Math.round(alt).toLocaleString() + ' m' : '—');
+  setTxt('fi-spd',     speed ? Math.round(speed * 1.852) + ' km/h' : '—');
+  setTxt('fi-hdg',     heading != null ? heading.toFixed(0) + '°' : '—');
+  setTxt('fi-vr',      squawk || '—');
+  setTxt('fi-icao',    hex);
+  document.getElementById('fi-route')?.classList.add('hidden');
+  document.getElementById('fi-legend')?.classList.add('hidden');
+  document.getElementById('fi-no-route')?.classList.add('hidden');
+  document.getElementById('flight-info')?.classList.remove('hidden');
+}
+
+function buildFlightInfoHTML(d, isMil) {
+  const cs = d.cs || d.icao24 || d.hex || '—';
+  const origin = isMil ? (d.type ? 'MIL · ' + d.type : 'MILITARY') : (d.country || '—');
+  const alt = d.alt ? Math.round(d.alt).toLocaleString() + ' m' : '—';
+  const spd = d.speed ? Math.round(d.speed * (isMil ? 1.852 : 3.6)) + ' km/h' : '—';
+  const hdg = d.heading != null ? d.heading.toFixed(0) + '°' : '—';
+  const vr = isMil ? (d.squawk || '—') : (d.vr ? (d.vr > 0 ? '+' : '') + d.vr.toFixed(1) + ' m/s' : '—');
+  const id = isMil ? d.hex : d.icao24;
+  return `<!DOCTYPE html><html><head><title>${cs} — Flight Info</title>
+<style>body{margin:0;background:#0c0e18;color:#dde1f5;font-family:'Segoe UI',system-ui,sans-serif;padding:2rem;}
+h1{color:#ff9a30;font-size:1.6rem;margin-bottom:.3rem}
+.origin{color:#7880a8;font-size:.85rem;margin-bottom:1.2rem}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem;}
+.stat span{font-size:.7rem;color:#505878;text-transform:uppercase;letter-spacing:.06em}
+.stat b{display:block;font-size:1rem;color:#c8d0f0;margin-top:.15rem}
+.full{grid-column:1/-1}
+</style></head><body>
+<h1>${cs}</h1><div class="origin">${origin}</div>
+<div class="grid">
+<div class="stat"><span>Altitude</span><b>${alt}</b></div>
+<div class="stat"><span>Speed</span><b>${spd}</b></div>
+<div class="stat"><span>Heading</span><b>${hdg}</b></div>
+<div class="stat"><span>${isMil ? 'Squawk' : 'V/S'}</span><b>${vr}</b></div>
+<div class="stat full"><span>${isMil ? 'Hex' : 'ICAO24'}</span><b>${id}</b></div>
+</div></body></html>`;
+}
+
+function openFlightInNewWindow(icao24) {
+  const entry = flightMap.get(icao24);
+  if (!entry) return;
+  const html = buildFlightInfoHTML(entry.d, false);
+  const w = window.open('', '_blank', 'width=420,height=350,noopener');
+  if (w) { w.document.write(html); w.document.close(); }
+}
+
+function openMilFlightInNewWindow(bbId) {
+  const hex = bbId.replace('mil_', '');
+  const entry = milFlightMap.get(hex);
+  if (!entry) return;
+  const html = buildFlightInfoHTML(entry.d, true);
+  const w = window.open('', '_blank', 'width=420,height=350,noopener');
+  if (w) { w.document.write(html); w.document.close(); }
 }
 
 // helper functions and featureS:
@@ -1063,14 +1199,11 @@ window.toggleBuildings      = toggleBuildings;
 window.toggleRotate         = toggleRotate;
 window.toggleMilitary       = toggleMilitary;
 window.toggleCameras        = toggleCameras;
+window.toggleRoutedOnly     = toggleRoutedOnly;
 window.closeFlight          = deselectFlight;
 window.closeCam             = closeCam;
 window.setWeatherLayer2d    = setWeatherLayer2d;
 window.setWeatherLayer3d    = setWeatherLayer3d;
 window.setWeatherLayerGlobe = setWeatherLayerGlobe;
-window.zoomIn      = zoomIn;
-window.zoomOut     = zoomOut;
-window.zoomInFar   = zoomInFar;
-window.zoomOutFar  = zoomOutFar;
 
 showTab('2d');

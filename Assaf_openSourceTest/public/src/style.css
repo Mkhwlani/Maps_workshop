@@ -1,10 +1,36 @@
+:root {
+  --bg-deep:     #0c0e18;
+  --bg-panel:    #13162a;
+  --bg-surface:  #1e2240;
+  --border:      #2e3360;
+  --border-dim:  #232640;
+  --text-primary:#dde1f5;
+  --text-muted:  #7880a8;
+  --text-dim:    #505878;
+  --accent:      #7080ff;
+  --accent-glow: rgba(112,128,255,0.4);
+  --orange:      #ff9a30;
+  --green:       #00ff88;
+  --red:         #ff4455;
+  --cyan:        #00ccff;
+  --mil-red:     #ff2244;
+  --panel-blur:  blur(12px);
+  --radius-sm:   6px;
+  --radius-md:   10px;
+  --radius-lg:   12px;
+  --space-xs:    0.25rem;
+  --space-sm:    0.5rem;
+  --space-md:    0.85rem;
+  --space-lg:    1.1rem;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
   height: 100%;
   font-family: 'Segoe UI', system-ui, sans-serif;
-  background: #0c0e18;
-  color: #dde1f5;
+  background: var(--bg-deep);
+  color: var(--text-primary);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -215,14 +241,27 @@ main { flex: 1; position: relative; min-height: 0; }
   left: 16px;
   z-index: 1000;
   background: rgba(12, 14, 24, 0.92);
-  backdrop-filter: blur(12px);
-  border: 1px solid #2e3360;
-  border-radius: 12px;
-  padding: 0.85rem 1rem;
+  backdrop-filter: var(--panel-blur);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md) 1rem;
   min-width: 220px;
   max-width: 280px;
 }
 #flight-info.hidden { display: none; }
+
+.fi-no-route {
+  text-align: center;
+  padding: var(--space-sm) var(--space-md);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-sm);
+}
+.fi-no-route.hidden { display: none; }
 
 .fi-header {
   display: flex;

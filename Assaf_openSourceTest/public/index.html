@@ -96,13 +96,12 @@
       <div id="flight-info" class="hidden">
         <div class="fi-header">
           <div>
-            <span id="fi-cs"      class="fi-callsign">—</span>
+            <span id="fi-cs" class="fi-callsign">—</span>
             <span id="fi-country" class="fi-country">—</span>
           </div>
           <button class="fi-close" onclick="closeFlight()">✕</button>
         </div>
 
-        <!-- Route section — visible when route data is available -->
         <div id="fi-route" class="fi-route hidden">
           <div class="fi-airports">
             <div class="fi-airport fi-dep">
@@ -116,7 +115,7 @@
             </div>
           </div>
           <div class="fi-track">
-            <div id="fi-prog-fill"  class="fi-prog-fill"  style="width:0%"></div>
+            <div id="fi-prog-fill" class="fi-prog-fill" style="width:0%"></div>
             <span id="fi-prog-plane" class="fi-prog-plane" style="left:0%">✈</span>
           </div>
         </div>
@@ -128,9 +127,12 @@
           <div class="fi-stat"><span>V/S</span>     <b id="fi-vr">—</b></div>
           <div class="fi-stat full"><span>ICAO24</span><b id="fi-icao">—</b></div>
         </div>
-        <div id="fi-legend" class="fi-legend">
+        <div id="fi-legend" class="fi-legend hidden">
           <span class="dot past"></span> Trail &nbsp;
           <span class="dot future"></span> Projected path
+        </div>
+        <div id="fi-no-route" class="fi-no-route hidden">
+          Route data unavailable
         </div>
       </div>
 
@@ -191,6 +193,13 @@
           <span>Cameras</span>
           <label class="toggle">
             <input type="checkbox" id="camToggle" onchange="toggleCameras()"/>
+            <span class="knob"></span>
+          </label>
+        </div>
+        <div class="ctrl-toggle">
+          <span>Routed only</span>
+          <label class="toggle">
+            <input type="checkbox" id="routedToggle" onchange="toggleRoutedOnly()"/>
             <span class="knob"></span>
           </label>
         </div>
