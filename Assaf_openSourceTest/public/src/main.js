@@ -25,6 +25,9 @@ let camMap          = new Map(); // camId → { bb, data }
 let camDataCache    = new Map();
 let camFetchPending = false;
 
+// Satellite state
+let satAvailable    = false;
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function loadScript(src) {
   return new Promise((res, rej) => {
@@ -42,12 +45,14 @@ function loadLink(href) {
 // ── Check API availability on load ───────────────────────────────────────────
 (async function checkApis() {
   try {
-    const [wRes, cRes] = await Promise.all([
+    const [wRes, cRes, sRes] = await Promise.all([
       fetch('/api/weather/config').then(r => r.json()),
       fetch('/api/webcams/config').then(r => r.json()),
+      fetch('/api/satellites/config').then(r => r.json()),
     ]);
     weatherAvailable = wRes.available;
     camAvailable = cRes.available;
+    satAvailable = sRes.available;
     if (weatherAvailable) {
       document.getElementById('controls2d')?.classList.remove('hidden');
       document.getElementById('weather3d')?.classList.remove('hidden');
@@ -313,6 +318,11 @@ function setupClickHandler() {
         return;
       }
 
+      if (pickId.startsWith('sat_')) {
+        openSatInfoWindow(pickId);
+        return;
+      }
+
       if (pickId.startsWith('flight_')) {
         selectFlight(pickId.replace('flight_', ''));
         return;
@@ -520,6 +530,8 @@ function removeRouteViz(icao24) {
 // ── Selection ─────────────────────────────────────────────────────────────────
 function selectFlight(icao24) {
   deselectFlight();
+  if (typeof deselectSat === 'function') deselectSat();
+  document.getElementById('sat-info')?.classList.add('hidden');
   const entry = flightMap.get(icao24);
   if (!entry) return;
 
@@ -1064,6 +1076,239 @@ function openCam(bbId) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SATELLITE TRACKING (N2YO)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let satBillboards = null;
+let satMap        = new Map(); // satid → { bb, d }
+let satInterval   = null;
+let satEnabled    = false;
+let satCategory   = 52; // default: Starlink (always has satellites overhead)
+
+function getSatCanvas() {
+  if (getSatCanvas._c) return getSatCanvas._c;
+  const N = 24;
+  const c = document.createElement('canvas');
+  c.width = c.height = N;
+  const ctx = c.getContext('2d');
+  const m = N / 2;
+  // Glowing teal diamond
+  ctx.shadowColor = 'rgba(32,214,192,0.8)';
+  ctx.shadowBlur  = 6;
+  ctx.fillStyle = '#20d6c0';
+  ctx.beginPath();
+  ctx.moveTo(m,  2);
+  ctx.lineTo(N - 3, m);
+  ctx.lineTo(m,  N - 2);
+  ctx.lineTo(3,  m);
+  ctx.closePath();
+  ctx.fill();
+  // White center dot
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(m, m, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  getSatCanvas._c = c;
+  return c;
+}
+
+function toggleSatellites() {
+  satEnabled = document.getElementById('satToggle').checked;
+  satEnabled ? startSatTracking() : stopSatTracking();
+}
+
+function changeSatCategory(val) {
+  satCategory = parseInt(val) || 1;
+  if (satEnabled) {
+    // Clear and re-fetch immediately with new category
+    clearSatBillboards();
+    refreshSatellites();
+  }
+}
+
+function startSatTracking() {
+  if (!cesiumViewer) return;
+  setupClickHandler();
+  if (!satBillboards) {
+    satBillboards = cesiumViewer.scene.primitives.add(
+      new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
+    );
+  }
+  refreshSatellites();
+  satInterval = setInterval(refreshSatellites, 30_000);
+}
+
+function stopSatTracking() {
+  if (satInterval) { clearInterval(satInterval); satInterval = null; }
+  clearSatBillboards();
+  document.getElementById('sat-count').textContent = '—';
+}
+
+function clearSatBillboards() {
+  if (satBillboards) {
+    for (const [, { bb }] of satMap) satBillboards.remove(bb);
+    satMap.clear();
+  }
+}
+
+function getSatObserverPosition() {
+  // Use the camera target on the globe as the observer
+  const ray = cesiumViewer.camera.getPickRay(new Cesium.Cartesian2(
+    cesiumViewer.canvas.clientWidth / 2,
+    cesiumViewer.canvas.clientHeight / 2,
+  ));
+  if (!ray) return null;
+  const hit = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene);
+  if (!hit) {
+    // Fallback to camera position
+    const carto = cesiumViewer.camera.positionCartographic;
+    return {
+      lat: Cesium.Math.toDegrees(carto.latitude),
+      lon: Cesium.Math.toDegrees(carto.longitude),
+    };
+  }
+  const carto = Cesium.Cartographic.fromCartesian(hit);
+  return {
+    lat: Cesium.Math.toDegrees(carto.latitude),
+    lon: Cesium.Math.toDegrees(carto.longitude),
+  };
+}
+
+async function refreshSatellites() {
+  if (!cesiumViewer || !satEnabled) return;
+
+  const obs = getSatObserverPosition();
+  if (!obs) return;
+
+  try {
+    const url = `/api/satellites/above?lat=${obs.lat.toFixed(4)}&lon=${obs.lon.toFixed(4)}&alt=0&radius=90&category=${satCategory}`;
+    console.debug('[SAT] fetching:', url);
+    const r = await fetch(url);
+    if (!r.ok) {
+      if (r.status === 503) document.getElementById('sat-count').textContent = 'No API key';
+      return;
+    }
+    const data = await r.json();
+    const sats = data.above || [];
+    console.debug('[SAT] received', sats.length, 'satellites');
+    applySatStates(sats);
+  } catch (e) { console.warn('Satellite fetch:', e.message); }
+}
+
+function applySatStates(satellites) {
+  const seen = new Set();
+
+  for (const sat of satellites) {
+    const id    = String(sat.satid);
+    const lat   = sat.satlat;
+    const lon   = sat.satlng;
+    const altKm = sat.satalt || 400;
+    const name  = sat.satname || id;
+
+    if (lat == null || lon == null) continue;
+    seen.add(id);
+
+    const altM = altKm * 1000; // convert km to meters
+
+    if (satMap.has(id)) {
+      const { bb, d } = satMap.get(id);
+      bb.position = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
+      Object.assign(d, { lat, lon, altKm, name });
+    } else {
+      const bb = satBillboards.add({
+        id:       'sat_' + id,
+        position: Cesium.Cartesian3.fromDegrees(lon, lat, altM),
+        image:    getSatCanvas(),
+        scale:    1.2,
+        color:    Cesium.Color.fromCssColorString('#20d6c0'),
+        heightReference: Cesium.HeightReference.NONE,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        scaleByDistance: new Cesium.NearFarScalar(1e5, 1.5, 5e7, 0.4),
+      });
+      satMap.set(id, {
+        bb,
+        d: {
+          satid: sat.satid,
+          name,
+          lat, lon, altKm,
+          intDesignator: sat.intDesignator || '—',
+          launchDate: sat.launchDate || '—',
+        },
+      });
+    }
+  }
+
+  // Remove stale satellites
+  for (const [id, { bb }] of satMap) {
+    if (!seen.has(id)) {
+      satBillboards.remove(bb);
+      satMap.delete(id);
+    }
+  }
+
+  document.getElementById('sat-count').textContent =
+    satMap.size.toLocaleString() + ' satellites';
+}
+
+let selectedSatId = null;
+
+function openSatInfoWindow(bbId) {
+  deselectSat(); // Deselect previously selected sat
+  
+  const satid = bbId.replace('sat_', '');
+  const entry = satMap.get(satid);
+  if (!entry) return;
+  const d = entry.d;
+
+  selectedSatId = satid;
+  
+  // Highlight selected satellite
+  entry.bb.scale = 1.6;
+  entry.bb.color = Cesium.Color.WHITE;
+
+  const setTxt = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val ?? '—';
+  };
+
+  setTxt('si-name', d.name);
+  setTxt('si-id', 'NORAD ID: ' + d.satid);
+  setTxt('si-alt', d.altKm ? Math.round(d.altKm).toLocaleString() + ' km' : '—');
+  setTxt('si-lat', d.lat?.toFixed(4) + '°');
+  setTxt('si-lon', d.lon?.toFixed(4) + '°');
+  setTxt('si-int', d.intDesignator);
+  setTxt('si-launch', d.launchDate);
+
+  const linkEl = document.getElementById('si-link');
+  if (linkEl) {
+    linkEl.innerHTML = `<a href="https://www.n2yo.com/satellite/?s=${d.satid}" target="_blank" style="color:#20d6c0; text-decoration:none;">Open ↗</a>`;
+  }
+
+  // Hide other panels
+  deselectFlight();
+  
+  const infoBox = document.getElementById('sat-info');
+  if (infoBox) infoBox.classList.remove('hidden');
+}
+
+function deselectSat() {
+  if (selectedSatId) {
+    const entry = satMap.get(selectedSatId);
+    if (entry) {
+      entry.bb.scale = 1.2;
+      entry.bb.color = Cesium.Color.fromCssColorString('#20d6c0');
+    }
+    selectedSatId = null;
+  }
+}
+
+function closeSat() {
+  deselectSat();
+  document.getElementById('sat-info')?.classList.add('hidden');
+}
+
 function closeCam() {
   // no-op — cameras now open in new windows
 }
@@ -1202,8 +1447,11 @@ window.toggleBuildings      = toggleBuildings;
 window.toggleRotate         = toggleRotate;
 window.toggleMilitary       = toggleMilitary;
 window.toggleCameras        = toggleCameras;
+window.toggleSatellites     = toggleSatellites;
+window.changeSatCategory    = changeSatCategory;
 window.toggleRoutedOnly     = toggleRoutedOnly;
 window.closeFlight          = deselectFlight;
+window.closeSat             = closeSat;
 window.closeCam             = closeCam;
 window.setWeatherLayer2d    = setWeatherLayer2d;
 window.setWeatherLayer3d    = setWeatherLayer3d;

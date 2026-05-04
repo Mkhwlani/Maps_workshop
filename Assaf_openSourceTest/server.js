@@ -10,6 +10,7 @@ const ADSBX_API_KEY = process.env.ADSBX_API_KEY || '';
 const ADSBX_BASE    = 'https://adsbexchange-com1.p.rapidapi.com';
 const OWM_API_KEY   = process.env.OWM_API_KEY || '';
 const WINDY_API_KEY = process.env.WINDY_API_KEY || '';
+const N2YO_API_KEY  = process.env.N2YO_API_KEY  || '';
 
 // ── Airport database (OurAirports, loaded once at startup) ────────────────────
 const byIcao = new Map(); // ICAO ident → { name, lat, lon }
@@ -203,6 +204,64 @@ app.get('/api/military', async (req, res) => {
     const data = await r.json();
     milCache = { data, ts: Date.now() };
     res.json(data);
+  } catch (e) { res.status(502).json({ error: e.message }); }
+});
+
+
+
+// ── Satellite tracking (N2YO) ────────────────────────────────────────────────
+const satCache = new Map(); // "lat,lon,radius,cat" → { data, ts }
+const SAT_TTL  = 60_000;    // 60 seconds
+
+app.get('/api/satellites/config', (req, res) => {
+  res.json({ available: !!N2YO_API_KEY });
+});
+
+app.get('/api/satellites/above', async (req, res) => {
+  if (!N2YO_API_KEY) { res.status(503).json({ error: 'N2YO_API_KEY not configured' }); return; }
+
+  const lat      = parseFloat(req.query.lat);
+  const lon      = parseFloat(req.query.lon);
+  const alt      = parseInt(req.query.alt) || 0;
+  const radius   = Math.min(90, Math.max(1, parseInt(req.query.radius) || 70));
+  const category = parseInt(req.query.category) || 0;
+
+  if (isNaN(lat) || isNaN(lon)) { res.status(400).json({ error: 'lat/lon required' }); return; }
+
+  const key = `${lat.toFixed(1)},${lon.toFixed(1)},${radius},${category}`;
+  const hit = satCache.get(key);
+  if (hit && Date.now() - hit.ts < SAT_TTL) { res.json(hit.data); return; }
+
+  try {
+    if (category === 2) {
+      // ISS special case: use global positions API to always find it
+      const url = `https://api.n2yo.com/rest/v1/satellite/positions/25544/0/0/0/1/&apiKey=${N2YO_API_KEY}`;
+      const r = await fetch(url);
+      if (!r.ok) { res.status(r.status).json({ error: 'N2YO API error' }); return; }
+      const posData = await r.json();
+      const p = posData.positions ? posData.positions[0] : null;
+      const data = p ? {
+        info: { category: "ISS", satcount: 1 },
+        above: [{
+          satid: 25544,
+          satname: posData.info.satname || "SPACE STATION",
+          satlat: p.satlatitude,
+          satlng: p.satlongitude,
+          satalt: p.sataltitude,
+          intDesignator: "1998-067A",
+          launchDate: "1998-11-20"
+        }]
+      } : { info: { category: "ISS", satcount: 0 }, above: [] };
+      satCache.set(key, { data, ts: Date.now() });
+      res.json(data);
+    } else {
+      const url = `https://api.n2yo.com/rest/v1/satellite/above/${lat.toFixed(4)}/${lon.toFixed(4)}/${alt}/${radius}/${category}/&apiKey=${N2YO_API_KEY}`;
+      const r = await fetch(url);
+      if (!r.ok) { res.status(r.status).json({ error: 'N2YO API error' }); return; }
+      const data = await r.json();
+      satCache.set(key, { data, ts: Date.now() });
+      res.json(data);
+    }
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 

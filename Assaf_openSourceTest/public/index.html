@@ -136,6 +136,25 @@
         </div>
       </div>
 
+      <!-- Satellite info panel (hidden until a satellite is clicked) -->
+      <div id="sat-info" class="hidden">
+        <div class="fi-header">
+          <div>
+            <span id="si-name" class="sat-name">—</span>
+            <span id="si-id" class="fi-country">—</span>
+          </div>
+          <button class="fi-close" onclick="closeSat()">✕</button>
+        </div>
+        <div class="fi-grid">
+          <div class="fi-stat"><span>Altitude</span><b id="si-alt">—</b></div>
+          <div class="fi-stat"><span>Latitude</span><b id="si-lat">—</b></div>
+          <div class="fi-stat"><span>Longitude</span><b id="si-lon">—</b></div>
+          <div class="fi-stat"><span>Int'l Design</span><b id="si-int">—</b></div>
+          <div class="fi-stat full"><span>Launch Date</span><b id="si-launch">—</b></div>
+          <div class="fi-stat full"><span>Track on N2YO</span><b id="si-link"><a href="#" target="_blank" style="color:#20d6c0; text-decoration:none;">Open ↗</a></b></div>
+        </div>
+      </div>
+
       <!-- Camera viewer popup -->
       <div id="cam-viewer" class="cam-viewer hidden">
         <div class="cam-header">
@@ -197,6 +216,23 @@
           </label>
         </div>
         <div class="ctrl-toggle">
+          <span>Satellites</span>
+          <label class="toggle">
+            <input type="checkbox" id="satToggle" onchange="toggleSatellites()"/>
+            <span class="knob"></span>
+          </label>
+        </div>
+        <div class="ctrl-toggle">
+          <span>Category</span>
+          <select id="satCategory" class="ctrl-select" onchange="changeSatCategory(this.value)">
+            <option value="1">Brightest</option>
+            <option value="2">ISS</option>
+            <option value="20">GPS</option>
+            <option value="52" selected>Starlink</option>
+            <option value="3">Weather</option>
+          </select>
+        </div>
+        <div class="ctrl-toggle">
           <span>Routed only</span>
           <label class="toggle">
             <input type="checkbox" id="routedToggle" onchange="toggleRoutedOnly()"/>
@@ -206,6 +242,7 @@
         <div id="flight-count" class="flight-count">Flights off</div>
         <div id="mil-count" class="flight-count mil">—</div>
         <div id="cam-count" class="flight-count cam">—</div>
+        <div id="sat-count" class="flight-count sat">—</div>
       </aside>
     </div>
 

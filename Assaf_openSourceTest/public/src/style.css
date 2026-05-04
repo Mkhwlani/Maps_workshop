@@ -234,8 +234,8 @@ main { flex: 1; position: relative; min-height: 0; }
 .cesium-sceneModePicker-wrapper .cesium-button { border-radius: 4px !important; }
 .cesium-navigationHelpButton-wrapper { color: #b0b8e0 !important; }
 
-/* ── Flight info panel ── */
-#flight-info {
+/* ── Flight and Satellite info panel ── */
+#flight-info, #sat-info {
   position: absolute;
   bottom: 20px;
   left: 16px;
@@ -248,7 +248,7 @@ main { flex: 1; position: relative; min-height: 0; }
   min-width: 220px;
   max-width: 280px;
 }
-#flight-info.hidden { display: none; }
+#flight-info.hidden, #sat-info.hidden { display: none; }
 
 .fi-no-route {
   text-align: center;
@@ -273,6 +273,13 @@ main { flex: 1; position: relative; min-height: 0; }
   font-size: 1.1rem;
   font-weight: 700;
   color: #ff9a30;
+  letter-spacing: 0.06em;
+  display: block;
+}
+.sat-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #20d6c0;
   letter-spacing: 0.06em;
   display: block;
 }
@@ -401,6 +408,11 @@ main { flex: 1; position: relative; min-height: 0; }
 }
 .flight-count.cam {
   color: #00ccff;
+  border-top: none;
+  padding-top: 0.15rem;
+}
+.flight-count.sat {
+  color: #20d6c0;
   border-top: none;
   padding-top: 0.15rem;
 }
