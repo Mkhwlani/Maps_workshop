@@ -540,6 +540,7 @@ function selectFlight(icao24) {
       .then(route => {
         if (selectedIcao !== icao24) return;
         if (!route?.dep?.lat || !route?.arr?.lat) {
+          drawProjectedPath(entry.d);
           renderInfoPanel(entry.d, null);
           return;
         }
@@ -548,9 +549,11 @@ function selectFlight(icao24) {
       })
       .catch(() => {
         if (selectedIcao !== icao24) return;
+        drawProjectedPath(entry.d);
         renderInfoPanel(entry.d, null);
       });
   } else {
+    drawProjectedPath(entry.d);
     renderInfoPanel(entry.d, null);
   }
 }
@@ -665,8 +668,8 @@ function renderInfoPanel(data, routeEntry) {
     noRoute?.classList.add('hidden');
   } else {
     routeSection?.classList.add('hidden');
-    legend?.classList.add('hidden');
-    noRoute?.classList.remove('hidden');
+    legend?.classList.remove('hidden');
+    noRoute?.classList.add('hidden');
   }
 
   infoBox.classList.remove('hidden');
