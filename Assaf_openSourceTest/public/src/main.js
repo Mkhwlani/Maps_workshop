@@ -9,6 +9,7 @@ const CAM_MAX_HEIGHT_M = 300_000; // ~300 km — above this, cameras are complet
 
 let nav = { lat: 24.7136, lng: 46.6753, zoom: 15 };
 let map2d, map3d, cesiumViewer;
+let osmBaseLayer = null;
 let rotateRemover = null;
 
 // Weather state
@@ -158,7 +159,7 @@ async function initCesium() {
   cesiumViewer.canvas.addEventListener('wheel', (e) => { e.preventDefault(); }, { passive: false });
 
   cesiumViewer.imageryLayers.removeAll();
-  cesiumViewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
+  osmBaseLayer = cesiumViewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     subdomains: ['a', 'b', 'c'], maximumLevel: 19,
     credit: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -850,7 +851,11 @@ function setWeatherLayerGlobe(layer) {
     cesiumViewer.imageryLayers.remove(weatherLayerGlobe);
     weatherLayerGlobe = null;
   }
-  if (!layer) return;
+  if (!layer) {
+    if (osmBaseLayer) osmBaseLayer.show = true;
+    return;
+  }
+  if (osmBaseLayer) osmBaseLayer.show = false;
   weatherLayerGlobe = cesiumViewer.imageryLayers.addImageryProvider(
     new Cesium.UrlTemplateImageryProvider({
       url: '/api/weather/tile/' + layer + '/{z}/{x}/{y}',
@@ -858,9 +863,9 @@ function setWeatherLayerGlobe(layer) {
     })
   );
   weatherLayerGlobe.alpha = 1.0;
-  weatherLayerGlobe.saturation = 8.0;
-  weatherLayerGlobe.contrast = 3.0;
-  weatherLayerGlobe.brightness = 1.6;
+  weatherLayerGlobe.saturation = 1.0;
+  weatherLayerGlobe.contrast = 1.0;
+  weatherLayerGlobe.brightness = 1.0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

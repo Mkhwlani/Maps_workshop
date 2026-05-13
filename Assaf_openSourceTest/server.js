@@ -11,6 +11,7 @@ const ADSBX_BASE    = 'https://adsbexchange-com1.p.rapidapi.com';
 const OWM_API_KEY   = process.env.OWM_API_KEY || '';
 const WINDY_API_KEY = process.env.WINDY_API_KEY || '';
 const N2YO_API_KEY  = process.env.N2YO_API_KEY  || '';
+const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 
 // ── Airport database (OurAirports, loaded once at startup) ────────────────────
 const byIcao = new Map(); // ICAO ident → { name, lat, lon }
@@ -70,7 +71,12 @@ const ROUTE_TTL  = 3_600_000; // 1 hour
 
 // ── Express ───────────────────────────────────────────────────────────────────
 app.use(express.static('public', { maxAge: '1h' }));
+app.use('/google', express.static('public-google', { maxAge: '1h' }));
 app.use('/node_modules', express.static('node_modules', { maxAge: '7d', immutable: true }));
+
+app.get('/api/google-config', (req, res) => {
+  res.json({ apiKey: GOOGLE_MAPS_API_KEY });
+});
 
 let flightCache = { data: null, ts: 0 };
 const FLIGHT_TTL = 300_000; // 5 min — OpenSky anonymous limit is ~400 req/day
@@ -145,6 +151,21 @@ app.get('/api/weather/tile/:layer/:z/:x/:y', async (req, res) => {
 
 app.get('/api/weather/config', (req, res) => {
   res.json({ available: !!OWM_API_KEY });
+});
+
+// ── Current weather at a point (OWM) ────────────────────────────────────────
+app.get('/api/weather/current', async (req, res) => {
+  if (!OWM_API_KEY) { res.status(503).json({ error: 'OWM_API_KEY not configured' }); return; }
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (isNaN(lat) || isNaN(lon)) { res.status(400).json({ error: 'lat/lon required' }); return; }
+  try {
+    const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${OWM_API_KEY}`;
+    const r = await fetch(url);
+    if (!r.ok) { res.status(r.status).json({ error: 'OWM error' }); return; }
+    const data = await r.json();
+    res.json(data);
+  } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
 // ── Webcam feeds (Windy Webcams API) ─────────────────────────────────────────

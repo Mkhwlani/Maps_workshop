@@ -5,6 +5,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "leaflet": "^1.9.4",
-    "maplibre-gl": "^5.23.0"
+    "maplibre-gl": "^5.23.0",
+    "pngjs": "^7.0.0"
   }
 }
