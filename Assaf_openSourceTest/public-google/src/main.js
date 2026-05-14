@@ -968,7 +968,7 @@ const WEATHER_MAP_CONFIGS = {
   precipitation_new: { land: '#c8c0a8', water: '#a8a088', opacity: 1.0 },
   temp_new:          { land: '#d5cfc0', water: '#a8bcc8', opacity: 1.0 },
   wind_new:          { land: '#c8b888', water: '#7a8a6a', opacity: 1.0 },
-  pressure_new:      { land: '#e8dcc8', water: '#e0d4c0', opacity: 1.0 },
+  pressure_new:      { land: '#e8dcc8', water: '#a8a088', opacity: 1.0 },
 };
 
 function getCesiumCenter() {
