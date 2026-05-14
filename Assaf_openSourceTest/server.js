@@ -168,6 +168,93 @@ app.get('/api/weather/current', async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
+// ── Wind grid (Open-Meteo bulk, 18×12 = 216 pts in one HTTP call, no API key) ─
+const windGridCache = new Map();
+const WIND_GRID_TTL = 30 * 60 * 1000;
+
+app.get('/api/weather/wind-grid', async (req, res) => {
+  const s = parseFloat(req.query.south), w = parseFloat(req.query.west);
+  const n = parseFloat(req.query.north), e = parseFloat(req.query.east);
+  if ([s, w, n, e].some(isNaN)) { res.status(400).json({ error: 'south/west/north/east required' }); return; }
+
+  const cacheKey = [s, w, n, e].map(v => v.toFixed(1)).join(',');
+  const hit = windGridCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < WIND_GRID_TTL) { console.log(`[wind-grid] Cache hit — key=${cacheKey}`); res.json(hit.data); return; }
+
+  const COLS = 18, ROWS = 12; // 216 points — detailed field, one bulk Open-Meteo request
+  const pts = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      pts.push({ lat: s + (n - s) * (r + 0.5) / ROWS, lng: w + (e - w) * (c + 0.5) / COLS });
+
+  // Try Open-Meteo first (one bulk request, 216 pts). Fall back to OWM on error/timeout.
+  try {
+    const lats = pts.map(p => p.lat.toFixed(4)).join(',');
+    const lngs = pts.map(p => p.lng.toFixed(4)).join(',');
+    const url  = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lngs}&current=wind_speed_10m,wind_direction_10m&wind_speed_unit=ms&forecast_days=1&timezone=auto`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (resp.ok) {
+      const json = await resp.json();
+      const rows = Array.isArray(json) ? json : [json];
+      const data = rows.map((d, i) => ({
+        lat:   pts[i].lat,
+        lng:   pts[i].lng,
+        speed: d.current?.wind_speed_10m    ?? 0,
+        deg:   d.current?.wind_direction_10m ?? 0,
+      }));
+      console.log(`[wind-grid] Using Open-Meteo — ${data.length} pts, key=${cacheKey}`);
+      windGridCache.set(cacheKey, { data, ts: Date.now() });
+      return res.json(data);
+    }
+    console.warn('[wind-grid] Open-Meteo returned', resp.status, '— falling back to OWM');
+  } catch (err) {
+    console.warn('[wind-grid] Open-Meteo failed:', err.message, '— falling back to OWM');
+  }
+
+  // OWM fallback — individual calls per point, uses existing API key
+  try {
+    const data = await Promise.all(pts.map(async pt => {
+      const url = `https://api.openweathermap.org/data/2.5/weather?lat=${pt.lat.toFixed(3)}&lon=${pt.lng.toFixed(3)}&appid=${OWM_API_KEY}&units=metric`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) return { lat: pt.lat, lng: pt.lng, speed: 0, deg: 0 };
+      const d = await r.json();
+      return { lat: pt.lat, lng: pt.lng, speed: d.wind?.speed ?? 0, deg: d.wind?.deg ?? 0 };
+    }));
+    console.log(`[wind-grid] Using OWM fallback — ${data.length} pts, key=${cacheKey}`);
+    windGridCache.set(cacheKey, { data, ts: Date.now() });
+    res.json(data);
+  } catch (err) { res.status(502).json({ error: err.message }); }
+});
+
+// ── Pressure grid (OWM, 10×7 = 70 pts) ───────────────────────────────────────
+const pressureGridCache = new Map();
+const PRESSURE_GRID_TTL = 30 * 60 * 1000;
+
+app.get('/api/weather/pressure-grid', async (req, res) => {
+  const s = parseFloat(req.query.south), w = parseFloat(req.query.west);
+  const n = parseFloat(req.query.north), e = parseFloat(req.query.east);
+  if ([s, w, n, e].some(isNaN)) { res.status(400).json({ error: 'bounds required' }); return; }
+  const cacheKey = [s, w, n, e].map(v => v.toFixed(1)).join(',');
+  const hit = pressureGridCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < PRESSURE_GRID_TTL) { res.json(hit.data); return; }
+  const COLS = 10, ROWS = 7;
+  const pts = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      pts.push({ lat: s + (n - s) * (r + 0.5) / ROWS, lng: w + (e - w) * (c + 0.5) / COLS });
+  try {
+    const results = await Promise.all(pts.map(async pt => {
+      const url = `https://api.openweathermap.org/data/2.5/weather?lat=${pt.lat.toFixed(3)}&lon=${pt.lng.toFixed(3)}&appid=${OWM_API_KEY}&units=metric`;
+      const r = await fetch(url);
+      if (!r.ok) return { lat: pt.lat, lng: pt.lng, pressure: 1013 };
+      const d = await r.json();
+      return { lat: pt.lat, lng: pt.lng, pressure: d.main?.pressure ?? 1013 };
+    }));
+    pressureGridCache.set(cacheKey, { data: results, ts: Date.now() });
+    res.json(results);
+  } catch (err) { res.status(502).json({ error: err.message }); }
+});
+
 // ── Webcam feeds (Windy Webcams API) ─────────────────────────────────────────
 let webcamCache = new Map(); // "lat,lon,radius" → { data, ts }
 const WEBCAM_TTL = 300_000;

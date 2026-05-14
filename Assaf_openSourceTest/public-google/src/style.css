@@ -427,6 +427,21 @@ html, body {
   text-transform: capitalize;
 }
 
+/* ── Satellite category select ── */
+.sub-select {
+  width: 100%;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  padding: 7px 10px;
+  cursor: pointer;
+  outline: none;
+  margin: 2px 0;
+}
+.sub-select option { background: #1c1c20; }
+
 /* ── Responsive ── */
 @media (max-width: 600px) {
   #sidebar { width: 170px; left: 8px; top: 64px; }

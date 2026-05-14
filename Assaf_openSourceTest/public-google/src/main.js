@@ -19,13 +19,6 @@ let planeCanvas = null;
 let flightInterval = null;
 let flightsEnabled = false;
 
-// ── Military state ───────────────────────────────────────────────────────────
-let milBillboards = null;
-let milFlightMap = new Map();
-let milInterval = null;
-let milPlaneCanvas = null;
-let milEnabled = false;
-
 // ── Weather state ────────────────────────────────────────────────────────────
 let weatherAvailable = false;
 let activeWeatherType = null;
@@ -208,21 +201,21 @@ function setupSidebar() {
 
 function activateLayer(layer) {
   switch (layer) {
-    case 'flights':  startFlightTracking(); break;
-    case 'military': startMilitaryTracking(); break;
-    case 'weather':  setStatus('Pick a weather layer'); break;
-    case 'cameras':  startCameras(); break;
+    case 'flights':   startFlightTracking(); break;
+    case 'weather':   setStatus('Pick a weather layer'); break;
+    case 'cameras':   startCameras(); break;
+    case 'satellite': startSatelliteView(); break;
   }
 }
 
 function deactivateLayer(layer) {
   switch (layer) {
-    case 'flights':  stopFlightTracking(); break;
-    case 'military': stopMilitaryTracking(); break;
-    case 'weather':  clearWeatherLayer(); activeWeatherType = null;
+    case 'flights':   stopFlightTracking(); break;
+    case 'weather':   clearWeatherLayer(); activeWeatherType = null;
       document.querySelectorAll('.sub-btn').forEach(b => b.classList.remove('active'));
       break;
-    case 'cameras':  stopCameras(); break;
+    case 'cameras':   stopCameras(); break;
+    case 'satellite': stopSatelliteView(); break;
   }
 }
 
@@ -245,7 +238,7 @@ function setupClickHandler() {
         if (typeof id !== 'string') continue;
         if (id.startsWith('cam_'))    { openCam(id); return; }
         if (id.startsWith('flight_')) { selectFlight(id.replace('flight_', '')); return; }
-        if (id.startsWith('mil_'))    { openMilFlightInNewWindow(id); return; }
+if (id.startsWith('sat_'))    { openSatInfoWindow(id); return; }
       }
     }
 
@@ -570,140 +563,6 @@ function renderInfoPanel(data, routeEntry) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MILITARY TRACKING
-// ═════════════════════════════════════════════════════════════════════════════
-
-function getMilPlaneCanvas() {
-  if (milPlaneCanvas) return milPlaneCanvas;
-  const N = 32, m = N / 2;
-  const c = document.createElement('canvas');
-  c.width = c.height = N;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ef4444';
-  ctx.shadowColor = 'rgba(255,0,0,0.6)';
-  ctx.shadowBlur = 4;
-  ctx.beginPath();
-  ctx.moveTo(m, 1); ctx.lineTo(m + 3.5, m + 2); ctx.lineTo(N - 2, m + 6);
-  ctx.lineTo(N - 2, m + 8.5); ctx.lineTo(m + 3, m + 5); ctx.lineTo(m + 4, N - 3);
-  ctx.lineTo(m, N - 5); ctx.lineTo(m - 4, N - 3); ctx.lineTo(m - 3, m + 5);
-  ctx.lineTo(2, m + 8.5); ctx.lineTo(2, m + 6); ctx.lineTo(m - 3.5, m + 2);
-  ctx.closePath(); ctx.fill();
-  milPlaneCanvas = c;
-  return c;
-}
-
-function startMilitaryTracking() {
-  if (!cesiumViewer) return;
-  milEnabled = true;
-  if (!milBillboards) {
-    milBillboards = cesiumViewer.scene.primitives.add(
-      new Cesium.BillboardCollection({ scene: cesiumViewer.scene })
-    );
-  }
-  refreshMilitary();
-  milInterval = setInterval(refreshMilitary, 15_000);
-  setStatus('Loading military...');
-}
-
-function stopMilitaryTracking() {
-  milEnabled = false;
-  if (milInterval) { clearInterval(milInterval); milInterval = null; }
-  if (milBillboards) {
-    for (const [, { bb }] of milFlightMap) milBillboards.remove(bb);
-    milFlightMap.clear();
-  }
-  setStatus('No layer active');
-}
-
-async function refreshMilitary() {
-  try {
-    const r = await fetch('/api/military');
-    if (!r.ok) {
-      if (r.status === 503) setStatus('No API key set');
-      return;
-    }
-    const data = await r.json();
-    applyMilStates(data.ac || []);
-  } catch (e) { console.warn('Military fetch:', e.message); }
-}
-
-function applyMilStates(aircraft) {
-  const seen = new Set();
-
-  for (const ac of aircraft) {
-    const hex = ac.hex;
-    const lat = ac.lat, lon = ac.lon;
-    const alt = ac.alt_baro === 'ground' ? 0 : (ac.alt_geom || ac.alt_baro || 0);
-    const heading = ac.track ?? 0;
-    const speed = ac.gs ?? 0;
-    const cs = (ac.flight || '').trim() || hex;
-    const type = ac.t || '';
-    const squawk = ac.squawk || '';
-
-    if (lat == null || lon == null || alt === 0) continue;
-    seen.add(hex);
-
-    const altM = alt * 0.3048;
-
-    if (milFlightMap.has(hex)) {
-      const { bb, d } = milFlightMap.get(hex);
-      bb.position = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
-      bb.rotation = -Cesium.Math.toRadians(heading);
-      Object.assign(d, { lon, lat, alt: altM, heading, speed, cs, type, squawk });
-    } else {
-      const bb = milBillboards.add({
-        id: 'mil_' + hex,
-        position: Cesium.Cartesian3.fromDegrees(lon, lat, altM),
-        image: getMilPlaneCanvas(),
-        scale: 0.65,
-        rotation: -Cesium.Math.toRadians(heading),
-        color: Cesium.Color.fromCssColorString('#ef4444'),
-        heightReference: Cesium.HeightReference.NONE,
-      });
-      milFlightMap.set(hex, {
-        bb,
-        d: { hex, cs, lon, lat, alt: altM, heading, speed, type, squawk, military: true },
-      });
-    }
-  }
-
-  for (const [hex, { bb }] of milFlightMap) {
-    if (!seen.has(hex)) { milBillboards.remove(bb); milFlightMap.delete(hex); }
-  }
-
-  setStatus(milFlightMap.size.toLocaleString() + ' military');
-}
-
-function openMilFlightInNewWindow(bbId) {
-  const hex = bbId.replace('mil_', '');
-  const entry = milFlightMap.get(hex);
-  if (!entry) return;
-  const d = entry.d;
-  const html = buildFlightInfoHTML(d, true);
-  const w = window.open('', '_blank', 'width=420,height=350,noopener');
-  if (w) { w.document.write(html); w.document.close(); }
-}
-
-function buildFlightInfoHTML(d, isMil) {
-  const cs = d.cs || d.icao24 || d.hex || '--';
-  const origin = isMil ? (d.type ? 'MIL · ' + d.type : 'MILITARY') : (d.country || '--');
-  const alt = d.alt ? Math.round(d.alt).toLocaleString() + ' m' : '--';
-  const spd = d.speed ? Math.round(d.speed * (isMil ? 1.852 : 3.6)) + ' km/h' : '--';
-  const hdg = d.heading != null ? d.heading.toFixed(0) + '°' : '--';
-  const vr = isMil ? (d.squawk || '--') : (d.vr ? (d.vr > 0 ? '+' : '') + d.vr.toFixed(1) + ' m/s' : '--');
-  const id = isMil ? d.hex : d.icao24;
-  return `<!DOCTYPE html><html><head><title>${cs}</title>
-<style>body{margin:0;background:#1c1c20;color:#e8e8ec;font-family:-apple-system,system-ui,sans-serif;padding:2rem;}
-h1{color:#ff6b35;font-size:1.5rem;margin-bottom:.3rem}.origin{color:#68686f;font-size:.85rem;margin-bottom:1.2rem}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.stat span{font-size:.7rem;color:#68686f;text-transform:uppercase;letter-spacing:.06em}
-.stat b{display:block;font-size:1rem;color:#e8e8ec;margin-top:.15rem}.full{grid-column:1/-1}</style></head><body>
-<h1>${cs}</h1><div class="origin">${origin}</div><div class="grid">
-<div class="stat"><span>Altitude</span><b>${alt}</b></div><div class="stat"><span>Speed</span><b>${spd}</b></div>
-<div class="stat"><span>Heading</span><b>${hdg}</b></div><div class="stat"><span>${isMil ? 'Squawk' : 'V/S'}</span><b>${vr}</b></div>
-<div class="stat full"><span>${isMil ? 'Hex' : 'ICAO24'}</span><b>${id}</b></div></div></body></html>`;
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
 // WEATHER LAYERS
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -711,6 +570,383 @@ h1{color:#ff6b35;font-size:1.5rem;margin-bottom:.3rem}.origin{color:#68686f;font
 let gmap = null;
 let gmapOverlay = null;
 let gmapLoaded = false;
+
+// ── Wind particle overlay ─────────────────────────────────────────────────────
+let windCanvas    = null;
+let windHmCanvas      = null;
+let windDrawHeatmap   = null;
+let windAnimId    = null;
+let windGrid      = [];
+let windListeners = [];
+let windFetchTimer = null;
+
+async function fetchWindGrid() {
+  if (!gmap) return;
+  const bounds = gmap.getBounds();
+  if (!bounds) return;
+  const ne = bounds.getNorthEast(), sw = bounds.getSouthWest();
+  const params = new URLSearchParams({
+    south: sw.lat().toFixed(3), west: sw.lng().toFixed(3),
+    north: ne.lat().toFixed(3), east: ne.lng().toFixed(3),
+  });
+  try {
+    const r = await fetch(`/api/weather/wind-grid?${params}`);
+    if (r.ok) { windGrid = await r.json(); if (windDrawHeatmap) windDrawHeatmap(); }
+  } catch (e) { console.warn('[wind] fetch error', e); }
+}
+
+function startWindParticles() {
+  stopWindParticles();
+
+  const W = window.innerWidth, H = window.innerHeight;
+
+  // ── Heatmap canvas (below particles) ────────────────────────────────────────
+  const hmW = Math.ceil(W / 4), hmH = Math.ceil(H / 4);
+  windHmCanvas = document.createElement('canvas');
+  windHmCanvas.width  = hmW;
+  windHmCanvas.height = hmH;
+  windHmCanvas.style.cssText = `position:fixed;top:0;left:0;width:${W}px;height:${H}px;pointer-events:none;z-index:1;opacity:0.85;filter:blur(18px);`;
+  document.body.appendChild(windHmCanvas);
+  const hmCtx = windHmCanvas.getContext('2d');
+
+  // ── Particle canvas (above heatmap) ─────────────────────────────────────────
+  windCanvas = document.createElement('canvas');
+  windCanvas.width  = W;
+  windCanvas.height = H;
+  windCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+  document.body.appendChild(windCanvas);
+  const ctx = windCanvas.getContext('2d');
+
+  // ── Coordinate helpers ───────────────────────────────────────────────────────
+  function toPixel(lat, lng) {
+    const b = gmap.getBounds();
+    if (!b) return null;
+    const ne = b.getNorthEast(), sw = b.getSouthWest();
+    let span = ne.lng() - sw.lng();
+    if (span <= 0) span += 360;
+    let lngOff = lng - sw.lng();
+    if (lngOff < 0) lngOff += 360;
+    if (lngOff > span) lngOff -= 360;
+    return { x: (lngOff / span) * W, y: (1 - (lat - sw.lat()) / (ne.lat() - sw.lat())) * H };
+  }
+
+  function toLatLng(px, py) {
+    const b = gmap.getBounds();
+    if (!b) return null;
+    const ne = b.getNorthEast(), sw = b.getSouthWest();
+    let span = ne.lng() - sw.lng();
+    if (span <= 0) span += 360;
+    let lng = sw.lng() + (px / W) * span;
+    if (lng > 180) lng -= 360;
+    return { lat: sw.lat() + (1 - py / H) * (ne.lat() - sw.lat()), lng };
+  }
+
+  // ── IDW wind interpolation ───────────────────────────────────────────────────
+  function windAt(lat, lng) {
+    if (!windGrid.length) return null;
+    let wu = 0, wv = 0, wt = 0;
+    for (const pt of windGrid) {
+      const d2 = (lat - pt.lat) ** 2 + (lng - pt.lng) ** 2;
+      const w  = d2 < 1e-8 ? 1e8 : 1 / d2;
+      const r  = pt.deg * Math.PI / 180;
+      wu += w * pt.speed * Math.sin(r);
+      wv += w * pt.speed * Math.cos(r);
+      wt += w;
+    }
+    if (!wt) return null;
+    const u = wu / wt, v = wv / wt;
+    return { u, v, speed: Math.sqrt(u * u + v * v) };
+  }
+
+  // ── Windy.com exact heatmap color scale ─────────────────────────────────────
+  const HM_RAMP = [
+    [ 0,  [  8,  10,  25]],
+    [ 2,  [ 15,  40, 120]],
+    [ 4,  [ 20,  90, 180]],
+    [ 7,  [ 35, 150, 190]],
+    [10,  [ 55, 195, 165]],
+    [13,  [ 90, 205, 120]],
+    [17,  [140, 215,  80]],
+    [21,  [205, 225,  45]],
+    [25,  [245, 175,  30]],
+    [30,  [225,  85,  25]],
+    [38,  [185,  20,  25]],
+    [50,  [100,   0,  30]],
+  ];
+
+  function hmColor(speed) {
+    let i = HM_RAMP.length - 2;
+    for (let j = 0; j < HM_RAMP.length - 1; j++) {
+      if (speed <= HM_RAMP[j + 1][0]) { i = j; break; }
+    }
+    const t = Math.min(1, (speed - HM_RAMP[i][0]) / (HM_RAMP[i + 1][0] - HM_RAMP[i][0]));
+    const [r0, g0, b0] = HM_RAMP[i][1], [r1, g1, b1] = HM_RAMP[i + 1][1];
+    return [~~(r0 + t * (r1 - r0)), ~~(g0 + t * (g1 - g0)), ~~(b0 + t * (b1 - b0))];
+  }
+
+  function drawWindHeatmap() {
+    if (!windGrid.length || !windHmCanvas) return;
+    const img = hmCtx.createImageData(hmW, hmH);
+    const d   = img.data;
+    for (let row = 0; row < hmH; row++) {
+      for (let col = 0; col < hmW; col++) {
+        const ll = toLatLng(col * 4, row * 4);
+        if (!ll) continue;
+        const w = windAt(ll.lat, ll.lng);
+        if (!w) continue;
+        const [r, g, b] = hmColor(w.speed);
+        const idx = (row * hmW + col) * 4;
+        d[idx]   = r;
+        d[idx+1] = g;
+        d[idx+2] = b;
+        d[idx+3] = Math.min(255, 60 + w.speed * 10); // calm=faint, strong=solid
+      }
+    }
+    hmCtx.putImageData(img, 0, 0);
+  }
+  windDrawHeatmap = drawWindHeatmap;
+
+  // ── Particles ────────────────────────────────────────────────────────────────
+  function spawn() {
+    const px = Math.random() * W;
+    const py = Math.random() * H;
+    const ll = toLatLng(px, py);
+    return { x: px, y: py, px: null, py: null,
+             lat: ll?.lat ?? 0, lng: ll?.lng ?? 0,
+             age: 0, life: 80 + ~~(Math.random() * 80) };
+  }
+
+  const particles = Array.from({ length: 2000 }, spawn);
+
+  let lastFrameTs = 0;
+  let mapMoving = false;
+
+  function frame(ts) {
+    if (!windCanvas) return;
+    windAnimId = requestAnimationFrame(frame);
+    if (mapMoving) return;
+    if (ts - lastFrameTs < 50) return; // ~20 fps
+    lastFrameTs = ts;
+
+    // Slow fade → long visible trails showing wind direction (Windy.com style)
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = 'rgba(0,0,0,0.04)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+
+    const zoom = gmap.getZoom() || 3;
+    ctx.lineWidth = 1.2;
+    ctx.lineCap   = 'round';
+
+    const b       = gmap.getBounds();
+    const lngSpan = b ? Math.abs(b.getNorthEast().lng() - b.getSouthWest().lng()) || 90 : 90;
+    const pxPerDeg = W / lngSpan;
+
+    // Speed proportional to actual wind (u/v already contain m/s), zoom-adaptive
+    const SCALE  = pxPerDeg * 0.015;
+    const MAX_PX = Math.max(1, 9 / zoom);
+
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      p.age++;
+
+      const w = windAt(p.lat, p.lng);
+      if (!w) { particles[i] = spawn(); continue; }
+
+      // Proportional speed — calm areas slow, windy areas fast (like Windy.com)
+      let dx = -w.u * SCALE;
+      let dy =  w.v * SCALE;
+      const mag = Math.sqrt(dx * dx + dy * dy);
+      if (mag > MAX_PX) { const s = MAX_PX / mag; dx *= s; dy *= s; }
+
+      p.px = p.x; p.py = p.y;
+      p.x += dx;
+      p.y += dy;
+
+      const ll = toLatLng(p.x, p.y);
+      if (!ll) { particles[i] = spawn(); continue; }
+      p.lat = ll.lat; p.lng = ll.lng;
+
+      // Windy.com-style sin fade: smooth in from 0, peak at mid-life, fade out to 0
+      const alpha = Math.sin(Math.PI * p.age / p.life) * 0.9;
+      if (alpha > 0.02) {
+        ctx.beginPath();
+        ctx.moveTo(p.px, p.py);
+        ctx.lineTo(p.x, p.y);
+        ctx.strokeStyle = `rgba(255,255,255,${alpha.toFixed(2)})`;
+        ctx.stroke();
+      }
+
+      if (p.age >= p.life || p.x < -10 || p.x > W + 10 || p.y < -10 || p.y > H + 10) {
+        particles[i] = spawn();
+      }
+    }
+  }
+  frame();
+
+  let lastFetchKey = null;
+  let lastFetchTime = 0;
+  const FETCH_COOLDOWN = 2 * 60 * 1000; // 2 minutes between fetches for same viewport
+
+  function maybeFetchWindGrid() {
+    const b = gmap.getBounds();
+    if (!b) return;
+    const ne = b.getNorthEast(), sw = b.getSouthWest();
+    // Round to 2 decimal places — only refetch if view moved meaningfully
+    const key = [sw.lat(), sw.lng(), ne.lat(), ne.lng()].map(v => v.toFixed(2)).join(',');
+    const now = Date.now();
+    if (key === lastFetchKey && now - lastFetchTime < FETCH_COOLDOWN) return;
+    lastFetchKey = key;
+    lastFetchTime = now;
+    fetchWindGrid();
+  }
+
+  const hideCanvas = () => {
+    mapMoving = true;
+    if (windCanvas) windCanvas.style.opacity = '0';
+  };
+  const dragListener = gmap.addListener('drag',         hideCanvas);
+  const dragStartListener = gmap.addListener('dragstart', hideCanvas);
+  const zoomListener = gmap.addListener('zoom_changed', hideCanvas);
+  windListeners.push(dragListener, dragStartListener, zoomListener);
+
+  const idleListener = gmap.addListener('idle', () => {
+    mapMoving = false;
+    // Reproject all particles to new screen positions then clear stale trails
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      const pp = toPixel(p.lat, p.lng);
+      if (pp && pp.x > -50 && pp.x < W + 50 && pp.y > -50 && pp.y < H + 50) {
+        p.x = pp.x; p.y = pp.y; p.px = null; p.py = null;
+      } else {
+        particles[i] = spawn();
+      }
+    }
+    ctx.clearRect(0, 0, W, H);
+    if (windCanvas) windCanvas.style.opacity = '1';
+    drawWindHeatmap();
+    maybeFetchWindGrid();
+  });
+  windListeners.push(idleListener);
+
+  if (gmap.getBounds()) maybeFetchWindGrid();
+  else {
+    const once = google.maps.event.addListenerOnce(gmap, 'idle', maybeFetchWindGrid);
+    windListeners.push(once);
+  }
+}
+
+function stopWindParticles() {
+  if (windAnimId)    { cancelAnimationFrame(windAnimId); windAnimId = null; }
+  if (windCanvas)    { windCanvas.remove(); windCanvas = null; }
+  if (windHmCanvas)  { windHmCanvas.remove(); windHmCanvas = null; }
+  windDrawHeatmap = null;
+  if (windFetchTimer){ clearTimeout(windFetchTimer); windFetchTimer = null; }
+  windListeners.forEach(l => google.maps.event.removeListener(l));
+  windListeners = [];
+  windGrid = [];
+}
+
+// ── Pressure heatmap ──────────────────────────────────────────────────────────
+let pressureCanvas = null;
+
+function stopPressureHeatmap() {
+  if (pressureCanvas) { pressureCanvas.remove(); pressureCanvas = null; }
+}
+
+async function startPressureHeatmap() {
+  stopPressureHeatmap();
+  if (!gmap) return;
+
+  const bounds = gmap.getBounds();
+  if (!bounds) { gmap.addListener('idle', () => startPressureHeatmap()); return; }
+
+  const ne = bounds.getNorthEast(), sw = bounds.getSouthWest();
+  const params = new URLSearchParams({
+    south: sw.lat().toFixed(2), west: sw.lng().toFixed(2),
+    north: ne.lat().toFixed(2), east: ne.lng().toFixed(2),
+  });
+
+  let grid = [];
+  try {
+    const r = await fetch(`/api/weather/pressure-grid?${params}`);
+    if (r.ok) grid = await r.json();
+  } catch (e) { console.warn('[pressure] fetch error', e); return; }
+  if (!grid.length) return;
+
+  const W = window.innerWidth, H = window.innerHeight;
+  const hmW = Math.ceil(W / 4), hmH = Math.ceil(H / 4);
+
+  pressureCanvas = document.createElement('canvas');
+  pressureCanvas.width  = hmW;
+  pressureCanvas.height = hmH;
+  pressureCanvas.style.cssText = `position:fixed;top:0;left:0;width:${W}px;height:${H}px;pointer-events:none;z-index:3;opacity:0.82;filter:blur(20px);`;
+  document.getElementById('google-map').appendChild(pressureCanvas);
+  const ctx = pressureCanvas.getContext('2d');
+
+  // IDW interpolation for pressure
+  function pressureAt(lat, lng) {
+    let wp = 0, wt = 0;
+    for (const pt of grid) {
+      const d2 = (lat - pt.lat) ** 2 + (lng - pt.lng) ** 2;
+      const w  = d2 < 1e-8 ? 1e8 : 1 / d2;
+      wp += w * pt.pressure;
+      wt += w;
+    }
+    return wt ? wp / wt : 1013;
+  }
+
+  // Find min/max from actual data for dynamic range
+  const pressures = grid.map(p => p.pressure);
+  const pMin = Math.min(...pressures);
+  const pMax = Math.max(...pressures);
+  const pRange = Math.max(pMax - pMin, 5); // avoid division by zero
+
+  const img = ctx.createImageData(hmW, hmH);
+  const d   = img.data;
+
+  for (let row = 0; row < hmH; row++) {
+    for (let col = 0; col < hmW; col++) {
+      const lngPx = sw.lng() + (col * 4 / W) * (ne.lng() - sw.lng());
+      const latPx = sw.lat() + (1 - (row * 4) / H) * (ne.lat() - sw.lat());
+      const p   = pressureAt(latPx, lngPx);
+      const t   = Math.max(0, Math.min(1, (p - pMin) / pRange)); // 0=low, 1=high
+      // Blue (low pressure) → Orange (high pressure)
+      const r = ~~(t * 255);
+      const g = ~~(t * 120);
+      const b = ~~((1 - t) * 255);
+      const idx = (row * hmW + col) * 4;
+      d[idx]   = r;
+      d[idx+1] = g;
+      d[idx+2] = b;
+      d[idx+3] = 210;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function rainMapStyle() {
+  return [
+    // Hide everything by default
+    { featureType: 'all',                    elementType: 'labels',          stylers: [{ visibility: 'off' }] },
+    { featureType: 'road',                                                    stylers: [{ visibility: 'off' }] },
+    { featureType: 'transit',                                                 stylers: [{ visibility: 'off' }] },
+    { featureType: 'poi',                                                     stylers: [{ visibility: 'off' }] },
+    // Hide sub-national borders
+    { featureType: 'administrative.province',    elementType: 'geometry',    stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.locality',    elementType: 'geometry',    stylers: [{ visibility: 'off' }] },
+    { featureType: 'administrative.neighborhood',elementType: 'geometry',    stylers: [{ visibility: 'off' }] },
+    // Show country borders — thin white line
+    { featureType: 'administrative.country',     elementType: 'geometry.stroke', stylers: [{ visibility: 'on' }, { color: '#000000' }, { weight: 1.5 }] },
+    { featureType: 'administrative.country',     elementType: 'geometry.fill',   stylers: [{ visibility: 'off' }] },
+    // Show country name labels
+    { featureType: 'administrative.country',     elementType: 'labels.text.fill',   stylers: [{ visibility: 'on' }, { color: '#ffffff' }] },
+    { featureType: 'administrative.country',     elementType: 'labels.text.stroke', stylers: [{ visibility: 'on' }, { color: '#000000' }, { weight: 2 }] },
+    // Base map colors — desaturated
+    { featureType: 'landscape',  elementType: 'geometry', stylers: [{ color: '#a89878' }, { saturation: -60 }, { lightness: 10 }] },
+    { featureType: 'water',      elementType: 'geometry', stylers: [{ color: '#4a6880' }, { saturation: -50 }] },
+  ];
+}
 
 function weatherMapStyle(land, water) {
   return [
@@ -793,12 +1029,13 @@ function addWeatherOverlay(type, doubleUp) {
     name: type,
   });
   gmap.overlayMapTypes.insertAt(0, gmapOverlay);
-  if (doubleUp) {
-    gmap.overlayMapTypes.insertAt(1, new google.maps.ImageMapType({
+  const copies = doubleUp ? 3 : 0;
+  for (let n = 1; n <= copies; n++) {
+    gmap.overlayMapTypes.insertAt(n, new google.maps.ImageMapType({
       getTileUrl: (coord, zoom) => `/api/weather/tile/${type}/${zoom}/${coord.x}/${coord.y}`,
       tileSize: new google.maps.Size(256, 256),
       maxZoom: 6,
-      name: type + '_2',
+      name: `${type}_${n + 1}`,
     }));
   }
 }
@@ -826,35 +1063,187 @@ async function setWeatherLayer(type) {
   }
 
   const cfg = WEATHER_MAP_CONFIGS[type] || WEATHER_MAP_CONFIGS.temp_new;
-  const style = weatherMapStyle(cfg.land, cfg.water);
   const center = getCesiumCenter();
+  const isRain = type === 'precipitation_new';
+  const style  = isRain ? rainMapStyle() : weatherMapStyle(cfg.land, cfg.water);
 
   if (!gmap) {
-    initGoogleMap(center, style, cfg.land);
+    initGoogleMap(center, style, isRain ? '#c8a84b' : cfg.land);
   } else {
-    gmap.setOptions({ styles: style, backgroundColor: cfg.land });
+    gmap.setMapTypeId('roadmap');
+    gmap.setOptions({ styles: style, backgroundColor: isRain ? '#c8a84b' : cfg.land });
     gmap.setCenter({ lat: center.lat, lng: center.lng });
     gmap.setZoom(center.zoom);
   }
 
-  addWeatherOverlay(type, cfg.doubleOverlay);
+  addWeatherOverlay(type, isRain ? true : cfg.doubleOverlay);
   showWeatherMap();
 
   // Stop Cesium rendering to free GPU and prevent bleed-through
   if (cesiumViewer) cesiumViewer.useDefaultRenderLoop = false;
+
+  if (type === 'wind_new')     startWindParticles();
+  if (type === 'pressure_new') startPressureHeatmap();
 
   const names = { clouds_new: 'Clouds', precipitation_new: 'Rain', temp_new: 'Temperature', wind_new: 'Wind', pressure_new: 'Pressure' };
   setStatus(names[type] || 'Weather');
 }
 
 function clearWeatherLayer() {
-  if (gmap && gmapOverlay) {
-    gmap.overlayMapTypes.clear();
-    gmapOverlay = null;
+  stopWindParticles();
+  stopPressureHeatmap();
+  if (gmap) {
+    if (gmapOverlay) { gmap.overlayMapTypes.clear(); gmapOverlay = null; }
+    gmap.setMapTypeId('roadmap');
   }
   hideWeatherMap();
   // Resume Cesium rendering
   if (cesiumViewer) cesiumViewer.useDefaultRenderLoop = true;
+}
+
+// ── Satellite tracking ────────────────────────────────────────────────────────
+let satBillboards  = null;
+let satMap         = new Map();
+let satInterval    = null;
+let satCategory    = 52;
+let selectedSatId  = null;
+
+function getSatCanvas() {
+  if (getSatCanvas._c) return getSatCanvas._c;
+  const N = 24, cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const cx = cv.getContext('2d');
+  cx.shadowBlur = 6; cx.shadowColor = 'rgba(32,214,192,0.8)';
+  cx.fillStyle = '#20d6c0';
+  cx.beginPath();
+  cx.moveTo(N/2, 2); cx.lineTo(N-2, N/2); cx.lineTo(N/2, N-2); cx.lineTo(2, N/2);
+  cx.closePath(); cx.fill();
+  cx.shadowBlur = 0; cx.fillStyle = '#fff';
+  cx.beginPath(); cx.arc(N/2, N/2, 2.5, 0, Math.PI*2); cx.fill();
+  getSatCanvas._c = cv;
+  return cv;
+}
+
+function changeSatCategory(val) {
+  satCategory = parseInt(val, 10);
+  if (satInterval) refreshSatellites();
+}
+
+function startSatTracking() {
+  if (!cesiumViewer) return;
+  if (!satBillboards) {
+    satBillboards = cesiumViewer.scene.primitives.add(new Cesium.BillboardCollection());
+  }
+  refreshSatellites();
+  satInterval = setInterval(refreshSatellites, 30000);
+  document.getElementById('sat-sub').classList.remove('hidden');
+}
+
+function stopSatTracking() {
+  clearInterval(satInterval); satInterval = null;
+  if (satBillboards) { cesiumViewer.scene.primitives.remove(satBillboards); satBillboards = null; }
+  satMap.clear();
+  document.getElementById('sat-sub').classList.add('hidden');
+  closeSat();
+}
+
+async function refreshSatellites() {
+  if (!cesiumViewer) return;
+  let lat = 0, lon = 0;
+  try {
+    const ray = cesiumViewer.camera.getPickRay(
+      new Cesium.Cartesian2(cesiumViewer.canvas.clientWidth/2, cesiumViewer.canvas.clientHeight/2));
+    const cart = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene);
+    if (cart) {
+      const carto = Cesium.Cartographic.fromCartesian(cart);
+      lat = Cesium.Math.toDegrees(carto.latitude);
+      lon = Cesium.Math.toDegrees(carto.longitude);
+    }
+  } catch (e) { /* use 0,0 */ }
+  try {
+    const r = await fetch(`/api/satellites/above?lat=${lat.toFixed(2)}&lon=${lon.toFixed(2)}&alt=0&radius=90&category=${satCategory}`);
+    if (!r.ok) return;
+    const data = await r.json();
+    applySatStates(data.above || data);
+  } catch (e) { console.warn('[sat]', e); }
+}
+
+function applySatStates(sats) {
+  if (!satBillboards || !Array.isArray(sats)) return;
+  const seen = new Set();
+  for (const s of sats) {
+    const id   = s.satid;
+    const lat  = s.satlat ?? s.lat;
+    const lon  = s.satlng ?? s.lon;
+    const altM = (s.satalt ?? s.altKm ?? 400) * 1000;
+    seen.add(id);
+    if (satMap.has(id)) {
+      const entry = satMap.get(id);
+      entry.bb.position = Cesium.Cartesian3.fromDegrees(lon, lat, altM);
+      entry.d = s;
+    } else {
+      const bb = satBillboards.add({
+        id:       'sat_' + id,
+        position: Cesium.Cartesian3.fromDegrees(lon, lat, altM),
+        image:    getSatCanvas(),
+        scale:    1.2,
+        color:    Cesium.Color.fromCssColorString('#20d6c0'),
+        heightReference: Cesium.HeightReference.NONE,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        scaleByDistance: new Cesium.NearFarScalar(1e5, 1.5, 5e7, 0.4),
+      });
+      satMap.set(id, { bb, d: s });
+    }
+  }
+  for (const [id, entry] of satMap) {
+    if (!seen.has(id)) { satBillboards.remove(entry.bb); satMap.delete(id); }
+  }
+  setStatus(`Satellites: ${satMap.size}`);
+}
+
+function openSatInfoWindow(bbId) {
+  const id = parseInt(bbId.replace('sat_', ''), 10);
+  if (selectedSatId !== null && selectedSatId !== id) deselectSat();
+  const entry = satMap.get(id);
+  if (!entry) return;
+  selectedSatId = id;
+  entry.bb.scale = 1.8;
+  entry.bb.color = Cesium.Color.WHITE;
+  const d = entry.d;
+  document.getElementById('si-name').textContent   = d.satname ?? d.name ?? '—';
+  document.getElementById('si-id').textContent     = 'NORAD ' + id;
+  document.getElementById('si-alt').textContent    = (d.satalt ?? d.altKm ?? 0).toFixed(0) + ' km';
+  document.getElementById('si-lat').textContent    = (d.satlat ?? d.lat ?? 0).toFixed(4) + '°';
+  document.getElementById('si-lon').textContent    = (d.satlng ?? d.lon ?? 0).toFixed(4) + '°';
+  document.getElementById('si-int').textContent    = d.intDesignator ?? '—';
+  document.getElementById('si-launch').textContent = d.launchDate ?? '—';
+  document.getElementById('si-link').innerHTML     = `<a href="https://www.n2yo.com/satellite/?s=${id}" target="_blank" style="color:var(--cyan)">n2yo.com ↗</a>`;
+  document.getElementById('sat-info').classList.remove('hidden');
+}
+
+function deselectSat() {
+  if (selectedSatId === null) return;
+  const entry = satMap.get(selectedSatId);
+  if (entry) { entry.bb.scale = 1.2; entry.bb.color = Cesium.Color.fromCssColorString('#20d6c0'); }
+  selectedSatId = null;
+}
+
+function closeSat() {
+  deselectSat();
+  document.getElementById('sat-info').classList.add('hidden');
+}
+
+// ── Satellite view (activates tracking on 3D globe) ──────────────────────────
+function startSatelliteView() {
+  document.getElementById('globe').classList.remove('hidden', 'dimmed');
+  document.getElementById('google-map').classList.add('hidden');
+  if (cesiumViewer) cesiumViewer.useDefaultRenderLoop = true;
+  startSatTracking();
+}
+
+function stopSatelliteView() {
+  stopSatTracking();
+  setStatus('');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
