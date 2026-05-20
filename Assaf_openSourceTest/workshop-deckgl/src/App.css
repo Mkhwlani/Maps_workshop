@@ -1,0 +1,184 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #0f0f1a;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ── Sidebar ──────────────────────────────────────────── */
+
+.sidebar {
+  width: 280px;
+  min-width: 280px;
+  background: #1a1a2e;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  z-index: 10;
+  overflow-y: auto;
+}
+
+.sidebar-header {
+  padding: 1.5rem 1.25rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #00d4ff;
+  letter-spacing: -0.02em;
+}
+
+.sidebar-subtitle {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 0.2rem;
+}
+
+/* ── Step list ────────────────────────────────────────── */
+
+.step-list {
+  padding: 0.5rem 0;
+  flex-shrink: 0;
+}
+
+.step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.75rem 1.25rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.step-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.step-item.active {
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.step-number {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.05);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: all 0.15s;
+}
+
+.step-item.active .step-number {
+  color: #00d4ff;
+  background: rgba(0, 212, 255, 0.15);
+}
+
+.step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.step-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.7);
+  transition: color 0.15s;
+}
+
+.step-item.active .step-title {
+  color: #ffffff;
+}
+
+.step-dash {
+  color: rgba(255, 255, 255, 0.2);
+  font-weight: 400;
+}
+
+.step-subtitle-inline {
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.78rem;
+}
+
+.step-item.active .step-subtitle-inline {
+  color: rgba(0, 212, 255, 0.7);
+}
+
+.step-description {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.3);
+  line-height: 1.35;
+}
+
+/* ── Code panel ───────────────────────────────────────── */
+
+.code-panel {
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.code-panel-header {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.3);
+  padding: 0.75rem 1.25rem 0.25rem;
+}
+
+.code-block {
+  padding: 0.5rem 1.25rem 1.25rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.6);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* ── Map container ────────────────────────────────────── */
+
+.map-container {
+  flex: 1;
+  position: relative;
+}
+
+/* ── deck.gl tooltip override ─────────────────────────── */
+
+.deck-tooltip {
+  pointer-events: none !important;
+}

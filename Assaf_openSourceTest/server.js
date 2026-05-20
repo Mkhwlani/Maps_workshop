@@ -73,6 +73,9 @@ const ROUTE_TTL  = 3_600_000; // 1 hour
 // ── Express ───────────────────────────────────────────────────────────────────
 app.use(express.static('public', { maxAge: '1h' }));
 app.use('/google', express.static('public-google', { maxAge: '1h' }));
+app.use('/solutions/solution1', express.static('solutions/solution1', { maxAge: '1h' }));
+app.use('/solutions/solution2', express.static('solutions/solution2', { maxAge: '1h' }));
+app.use('/solutions/solution3', express.static('solutions/solution3', { maxAge: '1h' }));
 app.use('/node_modules', express.static('node_modules', { maxAge: '7d', immutable: true }));
 
 app.get('/api/google-config', (req, res) => {
