@@ -104,6 +104,7 @@ async function initCesium() {
   sscc.enableRotate = true;
   sscc.enableTranslate = true;
   sscc.enableLook = true;
+  sscc.rotateEventTypes = [Cesium.CameraEventType.LEFT_DRAG];
   sscc.zoomEventTypes = [
     Cesium.CameraEventType.WHEEL,
     Cesium.CameraEventType.PINCH,
@@ -121,7 +122,8 @@ async function initCesium() {
   if (googleApiKey) {
     try {
       googleTileset = await Cesium.Cesium3DTileset.fromUrl(
-        'https://tile.googleapis.com/v1/3dtiles/root.json?key=' + googleApiKey
+        'https://tile.googleapis.com/v1/3dtiles/root.json?key=' + googleApiKey,
+        { maximumScreenSpaceError: 4, maximumMemoryUsage: 2048 }
       );
       cesiumViewer.scene.primitives.add(googleTileset);
     } catch (e) {
@@ -140,6 +142,8 @@ async function initCesium() {
 
   cesiumViewer.scene.globe.enableLighting = true;
   cesiumViewer.scene.skyAtmosphere.show = true;
+  cesiumViewer.scene.postProcessStages.fxaa.enabled = true;
+  cesiumViewer.resolutionScale = 1.5;
 
   cesiumViewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(46.67, 20, 18_000_000),
@@ -242,19 +246,26 @@ if (id.startsWith('sat_'))    { openSatInfoWindow(id); return; }
       }
     }
 
-    // No billboard hit — check for globe click (weather info)
-    if (weatherAvailable) {
-      const ray = cesiumViewer.camera.getPickRay(movement.position);
-      if (ray) {
-        const cartesian = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene)
-          || cesiumViewer.scene.pickPosition(movement.position);
-        if (cartesian) {
-          const carto = Cesium.Cartographic.fromCartesian(cartesian);
-          const lat = Cesium.Math.toDegrees(carto.latitude);
-          const lon = Cesium.Math.toDegrees(carto.longitude);
-          fetchWeatherAt(lat, lon);
-          return;
-        }
+    // No billboard hit — zoom into clicked point and fetch weather
+    const ray = cesiumViewer.camera.getPickRay(movement.position);
+    if (ray) {
+      const cartesian = cesiumViewer.scene.globe.pick(ray, cesiumViewer.scene)
+        || cesiumViewer.scene.pickPosition(movement.position);
+      if (cartesian) {
+        const carto = Cesium.Cartographic.fromCartesian(cartesian);
+        const lat = Cesium.Math.toDegrees(carto.latitude);
+        const lon = Cesium.Math.toDegrees(carto.longitude);
+        cesiumViewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lon, lat, 1500),
+          orientation: {
+            heading: cesiumViewer.camera.heading,
+            pitch: Cesium.Math.toRadians(-45),
+            roll: 0,
+          },
+          duration: 2.0,
+        });
+        if (weatherAvailable) fetchWeatherAt(lat, lon);
+        return;
       }
     }
 
@@ -847,83 +858,7 @@ function stopWindParticles() {
   windGrid = [];
 }
 
-// ── Pressure heatmap ──────────────────────────────────────────────────────────
-let pressureCanvas = null;
-
-function stopPressureHeatmap() {
-  if (pressureCanvas) { pressureCanvas.remove(); pressureCanvas = null; }
-}
-
-async function startPressureHeatmap() {
-  stopPressureHeatmap();
-  if (!gmap) return;
-
-  const bounds = gmap.getBounds();
-  if (!bounds) { gmap.addListener('idle', () => startPressureHeatmap()); return; }
-
-  const ne = bounds.getNorthEast(), sw = bounds.getSouthWest();
-  const params = new URLSearchParams({
-    south: sw.lat().toFixed(2), west: sw.lng().toFixed(2),
-    north: ne.lat().toFixed(2), east: ne.lng().toFixed(2),
-  });
-
-  let grid = [];
-  try {
-    const r = await fetch(`/api/weather/pressure-grid?${params}`);
-    if (r.ok) grid = await r.json();
-  } catch (e) { console.warn('[pressure] fetch error', e); return; }
-  if (!grid.length) return;
-
-  const W = window.innerWidth, H = window.innerHeight;
-  const hmW = Math.ceil(W / 4), hmH = Math.ceil(H / 4);
-
-  pressureCanvas = document.createElement('canvas');
-  pressureCanvas.width  = hmW;
-  pressureCanvas.height = hmH;
-  pressureCanvas.style.cssText = `position:fixed;top:0;left:0;width:${W}px;height:${H}px;pointer-events:none;z-index:3;opacity:0.82;filter:blur(20px);`;
-  document.getElementById('google-map').appendChild(pressureCanvas);
-  const ctx = pressureCanvas.getContext('2d');
-
-  // IDW interpolation for pressure
-  function pressureAt(lat, lng) {
-    let wp = 0, wt = 0;
-    for (const pt of grid) {
-      const d2 = (lat - pt.lat) ** 2 + (lng - pt.lng) ** 2;
-      const w  = d2 < 1e-8 ? 1e8 : 1 / d2;
-      wp += w * pt.pressure;
-      wt += w;
-    }
-    return wt ? wp / wt : 1013;
-  }
-
-  // Find min/max from actual data for dynamic range
-  const pressures = grid.map(p => p.pressure);
-  const pMin = Math.min(...pressures);
-  const pMax = Math.max(...pressures);
-  const pRange = Math.max(pMax - pMin, 5); // avoid division by zero
-
-  const img = ctx.createImageData(hmW, hmH);
-  const d   = img.data;
-
-  for (let row = 0; row < hmH; row++) {
-    for (let col = 0; col < hmW; col++) {
-      const lngPx = sw.lng() + (col * 4 / W) * (ne.lng() - sw.lng());
-      const latPx = sw.lat() + (1 - (row * 4) / H) * (ne.lat() - sw.lat());
-      const p   = pressureAt(latPx, lngPx);
-      const t   = Math.max(0, Math.min(1, (p - pMin) / pRange)); // 0=low, 1=high
-      // Blue (low pressure) → Orange (high pressure)
-      const r = ~~(t * 255);
-      const g = ~~(t * 120);
-      const b = ~~((1 - t) * 255);
-      const idx = (row * hmW + col) * 4;
-      d[idx]   = r;
-      d[idx+1] = g;
-      d[idx+2] = b;
-      d[idx+3] = 210;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-}
+// (pressure uses the OWM tile overlay added by addWeatherOverlay — no custom canvas needed)
 
 function rainMapStyle() {
   return [
@@ -937,14 +872,14 @@ function rainMapStyle() {
     { featureType: 'administrative.locality',    elementType: 'geometry',    stylers: [{ visibility: 'off' }] },
     { featureType: 'administrative.neighborhood',elementType: 'geometry',    stylers: [{ visibility: 'off' }] },
     // Show country borders — thin white line
-    { featureType: 'administrative.country',     elementType: 'geometry.stroke', stylers: [{ visibility: 'on' }, { color: '#000000' }, { weight: 1.5 }] },
+    { featureType: 'administrative.country',     elementType: 'geometry.stroke', stylers: [{ visibility: 'on' }, { color: '#888888' }, { weight: 1.5 }] },
     { featureType: 'administrative.country',     elementType: 'geometry.fill',   stylers: [{ visibility: 'off' }] },
     // Show country name labels
     { featureType: 'administrative.country',     elementType: 'labels.text.fill',   stylers: [{ visibility: 'on' }, { color: '#ffffff' }] },
-    { featureType: 'administrative.country',     elementType: 'labels.text.stroke', stylers: [{ visibility: 'on' }, { color: '#000000' }, { weight: 2 }] },
+    { featureType: 'administrative.country',     elementType: 'labels.text.stroke', stylers: [{ visibility: 'on' }, { color: '#888888' }, { weight: 2 }] },
     // Base map colors — desaturated
     { featureType: 'landscape',  elementType: 'geometry', stylers: [{ color: '#a89878' }, { saturation: -60 }, { lightness: 10 }] },
-    { featureType: 'water',      elementType: 'geometry', stylers: [{ color: '#4a6880' }, { saturation: -50 }] },
+    { featureType: 'water',      elementType: 'geometry', stylers: [{ color: '#d6c8a9' }, { saturation: -50 }] },
   ];
 }
 
@@ -952,7 +887,7 @@ function weatherMapStyle(land, water) {
   return [
     { elementType: 'geometry', stylers: [{ color: land }] },
     { elementType: 'labels', stylers: [{ visibility: 'off' }] },
-    { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#666' }] },
+    { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#888888' }] },
     { featureType: 'administrative.country', elementType: 'labels', stylers: [{ visibility: 'on' }] },
     { featureType: 'administrative.country', elementType: 'labels.text.fill', stylers: [{ color: '#333' }] },
     { featureType: 'administrative.country', elementType: 'labels.text.stroke', stylers: [{ color: '#ffffff' }, { weight: 2 }] },
@@ -1040,6 +975,37 @@ function addWeatherOverlay(type, doubleUp) {
   }
 }
 
+function addRainOverlay() {
+  gmap.overlayMapTypes.clear();
+  // Use a custom MapType so we can recolor pixels on a canvas — avoids all caching
+  // and server-side PNG parsing issues that cause magenta broken tiles.
+  const rainType = {
+    tileSize: new google.maps.Size(256, 256),
+    maxZoom: 6,
+    name: 'rain_cyan',
+    getTile(coord, zoom, ownerDocument) {
+      const canvas = ownerDocument.createElement('canvas');
+      canvas.width = canvas.height = 256;
+      const img = new Image();
+      img.onload = () => {
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const id = ctx.getImageData(0, 0, 256, 256);
+        const d = id.data;
+        for (let i = 0; i < d.length; i += 4) {
+          if (d[i + 3] > 10) { d[i] = 10; d[i+1] = 40; d[i+2] = 120; d[i+3] = Math.min(255, d[i+3] * 3); }
+        }
+        ctx.putImageData(id, 0, 0);
+      };
+      img.onerror = () => {};
+      img.src = `/api/weather/tile/precipitation_new/${zoom}/${coord.x}/${coord.y}`;
+      return canvas;
+    },
+    releaseTile() {},
+  };
+  gmap.overlayMapTypes.insertAt(0, rainType);
+}
+
 function showWeatherMap() {
   document.getElementById('globe').classList.add('hidden');
   document.getElementById('google-map').classList.remove('hidden');
@@ -1076,14 +1042,15 @@ async function setWeatherLayer(type) {
     gmap.setZoom(center.zoom);
   }
 
-  addWeatherOverlay(type, isRain ? true : cfg.doubleOverlay);
+  if (isRain) addRainOverlay(); else addWeatherOverlay(type, cfg.doubleOverlay);
   showWeatherMap();
 
   // Stop Cesium rendering to free GPU and prevent bleed-through
   if (cesiumViewer) cesiumViewer.useDefaultRenderLoop = false;
 
-  if (type === 'wind_new')     startWindParticles();
-  if (type === 'pressure_new') startPressureHeatmap();
+  if (type === 'wind_new') startWindParticles();
+
+  // Purple tint for rain — hue-rotate shifts the blue OWM tiles to violet/purple
 
   const names = { clouds_new: 'Clouds', precipitation_new: 'Rain', temp_new: 'Temperature', wind_new: 'Wind', pressure_new: 'Pressure' };
   setStatus(names[type] || 'Weather');
@@ -1091,7 +1058,6 @@ async function setWeatherLayer(type) {
 
 function clearWeatherLayer() {
   stopWindParticles();
-  stopPressureHeatmap();
   if (gmap) {
     if (gmapOverlay) { gmap.overlayMapTypes.clear(); gmapOverlay = null; }
     gmap.setMapTypeId('roadmap');
@@ -1462,6 +1428,12 @@ function goTo(lat, lng, zoom) {
 
 function zoomIn() { if (cesiumViewer) cesiumViewer.camera.zoomIn(100000); }
 function zoomOut() { if (cesiumViewer) cesiumViewer.camera.zoomOut(100000); }
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'ArrowUp')   { e.preventDefault(); zoomIn(); }
+  if (e.key === 'ArrowDown') { e.preventDefault(); zoomOut(); }
+});
 function closeFlight() { deselectFlight(); }
 
 // ── Expose to HTML ───────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const express = require('express');
 const compression = require('compression');
+const { PNG } = require('pngjs');
 const app = express();
 
 app.use(compression());
@@ -133,20 +134,45 @@ app.get('/api/route/:callsign', async (req, res) => {
 });
 
 // ── Weather tile proxy (OpenWeatherMap) ──────────────────────────────────────
+
+const TRANSPARENT_TILE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64'
+);
+
 app.get('/api/weather/tile/:layer/:z/:x/:y', async (req, res) => {
   if (!OWM_API_KEY) { res.status(503).json({ error: 'OWM_API_KEY not configured' }); return; }
   const { layer, z, x, y } = req.params;
   const allowed = ['clouds_new', 'precipitation_new', 'temp_new', 'wind_new', 'pressure_new'];
   if (!allowed.includes(layer)) { res.status(400).json({ error: 'invalid layer' }); return; }
+  const zi = parseInt(z, 10), xi = parseInt(x, 10), yi = parseInt(y, 10);
+  const maxTile = Math.pow(2, zi) - 1;
+  if (isNaN(zi) || isNaN(xi) || isNaN(yi) || xi < 0 || yi < 0 || xi > maxTile || yi > maxTile) {
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.send(TRANSPARENT_TILE);
+    return;
+  }
   try {
     const url = `https://tile.openweathermap.org/map/${layer}/${z}/${x}/${y}.png?appid=${OWM_API_KEY}`;
     const r = await fetch(url);
-    if (!r.ok) { res.status(r.status).end(); return; }
+    if (!r.ok) {
+      res.set('Content-Type', 'image/png');
+      res.set('Cache-Control', 'public, max-age=60');
+      res.send(TRANSPARENT_TILE);
+      return;
+    }
     res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=600');
-    const buf = Buffer.from(await r.arrayBuffer());
+    res.set('Cache-Control', layer === 'precipitation_new' ? 'no-store' : 'public, max-age=600');
+    let buf = Buffer.from(await r.arrayBuffer());
+    if (layer === 'precipitation_new') {
+      try { buf = await recolorRainTile(buf); } catch (_) { buf = TRANSPARENT_TILE; }
+    }
     res.send(buf);
-  } catch (e) { res.status(502).json({ error: e.message }); }
+  } catch (e) {
+    res.set('Content-Type', 'image/png');
+    res.send(TRANSPARENT_TILE);
+  }
 });
 
 app.get('/api/weather/config', (req, res) => {
@@ -223,35 +249,6 @@ app.get('/api/weather/wind-grid', async (req, res) => {
     console.log(`[wind-grid] Using OWM fallback — ${data.length} pts, key=${cacheKey}`);
     windGridCache.set(cacheKey, { data, ts: Date.now() });
     res.json(data);
-  } catch (err) { res.status(502).json({ error: err.message }); }
-});
-
-// ── Pressure grid (OWM, 10×7 = 70 pts) ───────────────────────────────────────
-const pressureGridCache = new Map();
-const PRESSURE_GRID_TTL = 30 * 60 * 1000;
-
-app.get('/api/weather/pressure-grid', async (req, res) => {
-  const s = parseFloat(req.query.south), w = parseFloat(req.query.west);
-  const n = parseFloat(req.query.north), e = parseFloat(req.query.east);
-  if ([s, w, n, e].some(isNaN)) { res.status(400).json({ error: 'bounds required' }); return; }
-  const cacheKey = [s, w, n, e].map(v => v.toFixed(1)).join(',');
-  const hit = pressureGridCache.get(cacheKey);
-  if (hit && Date.now() - hit.ts < PRESSURE_GRID_TTL) { res.json(hit.data); return; }
-  const COLS = 10, ROWS = 7;
-  const pts = [];
-  for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      pts.push({ lat: s + (n - s) * (r + 0.5) / ROWS, lng: w + (e - w) * (c + 0.5) / COLS });
-  try {
-    const results = await Promise.all(pts.map(async pt => {
-      const url = `https://api.openweathermap.org/data/2.5/weather?lat=${pt.lat.toFixed(3)}&lon=${pt.lng.toFixed(3)}&appid=${OWM_API_KEY}&units=metric`;
-      const r = await fetch(url);
-      if (!r.ok) return { lat: pt.lat, lng: pt.lng, pressure: 1013 };
-      const d = await r.json();
-      return { lat: pt.lat, lng: pt.lng, pressure: d.main?.pressure ?? 1013 };
-    }));
-    pressureGridCache.set(cacheKey, { data: results, ts: Date.now() });
-    res.json(results);
   } catch (err) { res.status(502).json({ error: err.message }); }
 });
 
