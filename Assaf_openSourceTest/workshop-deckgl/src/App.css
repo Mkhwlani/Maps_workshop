@@ -52,6 +52,40 @@ body,
   margin-top: 0.2rem;
 }
 
+/* ── Tab bar ──────────────────────────────────────────── */
+
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 0;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 0.6rem 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: all 0.15s;
+}
+
+.tab-btn:hover {
+  color: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tab-btn.active {
+  color: #00d4ff;
+  border-bottom-color: #00d4ff;
+}
+
 /* ── Step list ────────────────────────────────────────── */
 
 .step-list {
@@ -143,6 +177,138 @@ body,
   line-height: 1.35;
 }
 
+/* ── Library tag ──────────────────────────────────────── */
+
+.step-library {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  color: rgba(0, 212, 255, 0.5);
+  margin-top: 0.15rem;
+}
+
+/* ── vis.gl info panel ───────────────────────────────── */
+
+.visgl-info {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.visgl-info-header {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.3);
+  margin-bottom: 0.5rem;
+}
+
+.visgl-lib {
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0;
+}
+
+.visgl-lib-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #00d4ff;
+}
+
+.visgl-lib-role {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.35);
+  line-height: 1.3;
+}
+
+/* ── Flights panel ───────────────────────────────────── */
+
+.flights-panel {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.flights-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.flights-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #00d4ff;
+}
+
+.flights-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.shuffle-btn {
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid rgba(0, 212, 255, 0.25);
+  color: #00d4ff;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.45rem 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.shuffle-btn:hover:not(:disabled) {
+  background: rgba(0, 212, 255, 0.2);
+  border-color: rgba(0, 212, 255, 0.4);
+}
+
+.shuffle-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.flights-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Cholera context ─────────────────────────────────── */
+
+.cholera-context {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.4);
+  line-height: 1.5;
+  margin: 0;
+}
+
 /* ── Code panel ───────────────────────────────────────── */
 
 .code-panel {
@@ -181,4 +347,263 @@ body,
 
 .deck-tooltip {
   pointer-events: none !important;
+}
+
+/* ── SearchSelect ────────────────────────────────────── */
+
+.search-select {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.search-select-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.search-select-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-select-input {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: #fff;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.search-select-input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.search-select-input:focus {
+  border-color: rgba(0, 212, 255, 0.4);
+}
+
+.search-select-clear {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.7rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+}
+
+.search-select-clear:hover {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.search-select-dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  background: #1e1e36;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+.search-select-option {
+  display: block;
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.7rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.search-select-option:hover {
+  background: rgba(0, 212, 255, 0.1);
+  color: #fff;
+}
+
+.search-select-option.selected {
+  color: #00d4ff;
+}
+
+.search-select-empty {
+  padding: 0.35rem 0.6rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+/* ── Search select needs relative parent ─────────────── */
+
+.search-select {
+  position: relative;
+}
+
+/* ── Flights count input ─────────────────────────────── */
+
+.flights-count-row {
+  display: flex;
+  align-items: center;
+}
+
+.flights-input-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.flights-count-input {
+  width: 60px;
+  padding: 0.3rem 0.4rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  color: #00d4ff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+  -moz-appearance: textfield;
+}
+
+.flights-count-input::-webkit-inner-spin-button,
+.flights-count-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.flights-count-input:focus {
+  border-color: rgba(0, 212, 255, 0.4);
+}
+
+.flights-of {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.flights-result-count {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.flights-legend-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.3);
+  margin-bottom: 0.15rem;
+}
+
+.flights-hint {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.62rem;
+  color: rgba(255, 255, 255, 0.2);
+  font-style: italic;
+  text-align: center;
+}
+
+/* ── Flight detail panel ─────────────────────────────── */
+
+.flight-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.flight-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.flight-detail-cs {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffa040;
+}
+
+.flight-detail-close {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 0.7rem;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.flight-detail-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.flight-detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.flight-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fd-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.fd-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.flight-detail-hint {
+  font-family: 'Inter', sans-serif;
+  font-size: 0.62rem;
+  color: #ffa040;
+  font-style: italic;
+  text-align: center;
+  opacity: 0.7;
 }
